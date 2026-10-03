@@ -37,6 +37,7 @@ Graphical interface (recommended)
     Double click cpprizm-gui.exe
     - Click File... and pick a .cpp, or Folder... and pick a project folder
     - Pick the console font and the console background (see 3.4)
+    - Type an add-in version if you want one other than 1.00
     - Click Build
     - The log area shows the compiler output live, and tells you where the .g3a is
     - Shortcut: drag a .cpp file, or a project folder, onto the window
@@ -44,20 +45,25 @@ Graphical interface (recommended)
 Command line and batch files
     cpprizm.exe  <source.cpp | project folder>  [--log <out.txt>]
                            [--font big|medium|small] [--bg white|black]
+                           [--version <string>]
     - Exit code 0 means success, non zero means failure
     - A bad --font or --bg value stops the build with an error, it does not quietly
       fall back to the default, so a typo in a batch file cannot go unnoticed
+    - --version writes the string into the .g3a header. It is what the calculator
+      shows in the main menu when you press OPTN on the add-in. 1 to 16 characters
+      from letters, digits, dots, dashes and underscores, default 1.00
     - Examples:
         cpprizm.exe "D:\code\snake.cpp"
         cpprizm.exe "D:\code\snake"
         cpprizm.exe ..\src\mygame.cpp --log build.txt
         cpprizm.exe ..\src\mygame.cpp --font small --bg black
+        cpprizm.exe ..\src\mygame.cpp --version 2.5.1-beta
 
     The graphical build also runs without a window:
         cpprizm-gui.exe --build "D:\code\snake.cpp" --font small --bg black
 
-    The two options are compiled into the .g3a, they are not a menu on the
-    calculator, so build again to change them.
+    The font, background and version are compiled into the .g3a, they are not a
+    menu on the calculator, so build again to change them.
 
 
 2. What lives where

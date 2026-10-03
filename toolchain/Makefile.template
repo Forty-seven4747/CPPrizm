@@ -13,7 +13,7 @@ SOURCES		:=	src
 DATA		:=	data
 INCLUDES	:=
 
-MKG3AFLAGS := -i uns:../unselected.bmp -i sel:../selected.bmp -n basic:"$(TARGET)"
+MKG3AFLAGS := -i uns:../unselected.bmp -i sel:../selected.bmp -n basic:"$(TARGET)" -V __G3AVER__
 
 CPPSHIM		:= ../cppshim
 CPPLIB		:= ../cpplib

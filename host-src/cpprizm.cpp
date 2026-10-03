@@ -24,10 +24,12 @@
 #define IDC_RADIO_BGW    1011
 #define IDC_RADIO_BGB    1012
 #define IDC_BTN_BROWSEDIR 1013
+#define IDC_EDIT_VER    1014
 
 static HINSTANCE g_hInst = nullptr;
 static HWND  g_hWnd = nullptr;
 static HWND  g_hEditSrc = nullptr;
+static HWND  g_hEditVer = nullptr;
 static HWND  g_hEditLog = nullptr;
 static HWND  g_hStatus = nullptr;
 static HFONT g_hFontUI = nullptr;
@@ -41,6 +43,10 @@ static bool g_headless = false;
 /* Console appearance, baked into the .g3a at build time. */
 static int g_conFont = 2;
 static int g_conBg = 0;
+
+/* Version string written into the .g3a header, shown in the calculator main
+   menu.  Baked in at build time like the console appearance. */
+static std::wstring g_g3aVersion = L"1.00";
 
 /* Set by the option parser when a switch has a bad or missing value, so a typo
    fails the build instead of quietly falling back to the default. */
@@ -56,6 +62,20 @@ static const wchar_t* FontDesc(int f) {
 
 static const wchar_t* BgDesc(int b) {
 	return b ? L"black paper" : L"white paper";
+}
+
+/* Version string for the .g3a header.  Restricted to ASCII letters, digits,
+   dot, dash and underscore, 1..16 characters, so it can never break the
+   mkg3a command line no matter what was typed. */
+static bool ParseVersionOpt(const std::wstring& v, std::wstring& out) {
+	if (v.empty() || v.size() > 16) return false;
+	for (wchar_t c : v) {
+		if (!((c >= L'0' && c <= L'9') || (c >= L'A' && c <= L'Z') ||
+		      (c >= L'a' && c <= L'z') || c == L'.' || c == L'-' || c == L'_'))
+			return false;
+	}
+	out = v;
+	return true;
 }
 
 static std::wstring Join(const std::wstring& a, const std::wstring& b) {
@@ -463,6 +483,7 @@ static bool DoBuild(const std::wstring& srcPath) {
 		LogAppend(std::wstring(L"note   : the ") + (isProject ? L"folder" : L"file") +
 		          L" name has non-ASCII characters, project name is " + name + L"\r\n");
 	LogAppend(std::wstring(L"console: ") + FontDesc(g_conFont) + L", " + BgDesc(g_conBg) + L"\r\n");
+	LogAppend(L"version: " + g_g3aVersion + L"\r\n");
 	LogAppend(L"\r\n");
 
 	std::wstring makeExe = Join(Join(sdkDir, L"bin"), L"make.exe");
@@ -640,10 +661,14 @@ static bool DoBuild(const std::wstring& srcPath) {
 	std::string nameA;
 	for (wchar_t c : name) nameA += (char)c;
 
+	std::string verA;
+	for (wchar_t c : g_g3aVersion) verA += (char)c;
+
 	std::string mk;
 	for (size_t i = 0; i < tpl.size();) {
 		if (tpl.compare(i, 7, "__SDK__") == 0) { mk += sdkFwd; i += 7; }
 		else if (tpl.compare(i, 10, "__TARGET__") == 0) { mk += nameA; i += 10; }
+		else if (tpl.compare(i, 10, "__G3AVER__") == 0) { mk += verA; i += 10; }
 		else { mk += tpl[i]; i++; }
 	}
 	if (!WriteAllBytes(Join(workDir, L"Makefile"), mk)) {
@@ -783,6 +808,18 @@ static void OnBuildClicked() {
 		if (src.empty()) return;
 	}
 
+	wchar_t ver[64] = L"";
+	GetWindowTextW(g_hEditVer, ver, 64);
+	if (!ParseVersionOpt(ver, g_g3aVersion)) {
+		MessageBoxW(g_hWnd,
+			L"The add-in version must be 1 to 16 characters from\n"
+			L"letters, digits, dots, dashes and underscores.\n\n"
+			L"For example: 1.00  or  2.5.1-beta",
+			L"Bad version", MB_ICONWARNING);
+		SetFocus(g_hEditVer);
+		return;
+	}
+
 	EnableWindow(GetDlgItem(g_hWnd, IDC_BTN_BUILD), FALSE);
 	EnableWindow(GetDlgItem(g_hWnd, IDC_BTN_BROWSE), FALSE);
 	DoBuild(src);
@@ -874,6 +911,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 		SendMessageW(h, WM_SETFONT, (WPARAM)g_hFontUI, TRUE);
 		y += 30;
 
+		h = CreateWindowExW(0, L"STATIC", L"Add-in version:",
+			WS_CHILD | WS_VISIBLE, x, y + 3, 100, 20, hwnd, NULL, g_hInst, NULL);
+		SendMessageW(h, WM_SETFONT, (WPARAM)g_hFontUI, TRUE);
+
+		g_hEditVer = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"1.00",
+			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+			x + 104, y, 110, 24, hwnd, (HMENU)IDC_EDIT_VER, g_hInst, NULL);
+		SendMessageW(g_hEditVer, WM_SETFONT, (WPARAM)g_hFontUI, TRUE);
+
+		h = CreateWindowExW(0, L"STATIC", L"shown in the calculator main menu, 1..16 chars",
+			WS_CHILD | WS_VISIBLE, x + 224, y + 3, 440, 20, hwnd, NULL, g_hInst, NULL);
+		SendMessageW(h, WM_SETFONT, (WPARAM)g_hFontUI, TRUE);
+		y += 30;
+
 		h = CreateWindowExW(0, L"STATIC", L"Log:",
 			WS_CHILD | WS_VISIBLE, x, y, 60, 20, hwnd, NULL, g_hInst, NULL);
 		SendMessageW(h, WM_SETFONT, (WPARAM)g_hFontUI, TRUE);
@@ -956,7 +1007,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 	case WM_CTLCOLOREDIT: {
 		HWND hCtl = (HWND)lp;
 		HDC dc = (HDC)wp;
-		if (hCtl == g_hEditLog || hCtl == g_hEditSrc) {
+		if (hCtl == g_hEditLog || hCtl == g_hEditSrc || hCtl == g_hEditVer) {
 			SetBkMode(dc, OPAQUE);
 			SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
 			SetBkColor(dc, GetSysColor(COLOR_WINDOW));
@@ -1037,7 +1088,8 @@ static bool ParseBgOpt(const std::wstring& v, int& out) {
 static const wchar_t* kUsage =
 	L"usage: cpprizm --build <source.cpp | project folder>\r\n"
 	L"                     [--log <out.txt>]\r\n"
-	L"                     [--font big|medium|small] [--bg white|black]\r\n";
+	L"                     [--font big|medium|small] [--bg white|black]\r\n"
+	L"                     [--version <string>]\r\n";
 
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR lpCmdLine, int nCmdShow) {
 	g_hInst = hInst;
@@ -1061,8 +1113,13 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR lpCmdLine, int nCmdShow) {
 				if (!ParseBgOpt(toks[++i], g_conBg))
 					g_optError = std::wstring(L"--bg expects white or black, not '") + toks[i] + L"'";
 			}
+			else if (toks[i] == L"--version" && i + 1 < toks.size()) {
+				if (!ParseVersionOpt(toks[++i], g_g3aVersion))
+					g_optError = std::wstring(L"--version expects 1 to 16 ASCII letters, digits, dots, dashes or underscores, not '") + toks[i] + L"'";
+			}
 			else if (toks[i] == L"--font") g_optError = L"--font needs a value: big, medium or small";
 			else if (toks[i] == L"--bg")   g_optError = L"--bg needs a value: white or black";
+			else if (toks[i] == L"--version") g_optError = L"--version needs a value, for example 1.00";
 		}
 
 		if (logPath.empty()) logPath = Join(g_root, L"tmp\\last-build.log");
@@ -1110,7 +1167,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR lpCmdLine, int nCmdShow) {
 	wc.hIconSm = LoadIcon(NULL, IDI_APPLICATION);
 	RegisterClassExW(&wc);
 
-	int w = 762, hgt = 604;
+	int w = 762, hgt = 634;
 	int sx = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
 	int sy = (GetSystemMetrics(SM_CYSCREEN) - hgt) / 2;
 
@@ -1157,8 +1214,13 @@ int wmain(int argc, wchar_t** argv) {
 			if (!ParseBgOpt(argv[++i], g_conBg))
 				g_optError = std::wstring(L"--bg expects white or black, not '") + argv[i] + L"'";
 		}
+		else if (a == L"--version" && i + 1 < argc) {
+			if (!ParseVersionOpt(argv[++i], g_g3aVersion))
+				g_optError = std::wstring(L"--version expects 1 to 16 ASCII letters, digits, dots, dashes or underscores, not '") + argv[i] + L"'";
+		}
 		else if (a == L"--font") g_optError = L"--font needs a value: big, medium or small";
 		else if (a == L"--bg")   g_optError = L"--bg needs a value: white or black";
+		else if (a == L"--version") g_optError = L"--version needs a value, for example 1.00";
 		else if (a == L"--help" || a == L"-h") {
 			wprintf(L"%ls", kUsage);
 			return 0;
