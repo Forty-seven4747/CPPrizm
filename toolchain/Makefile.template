@@ -1,0 +1,120 @@
+.SUFFIXES:
+
+FXCGSDK := __SDK__
+export FXCGSDK
+
+include $(FXCGSDK)/toolchain/prizm_rules
+
+TARGET := __TARGET__
+export TARGET
+
+BUILD		:=	build
+SOURCES		:=	src
+DATA		:=	data
+INCLUDES	:=
+
+MKG3AFLAGS := -i uns:../unselected.bmp -i sel:../selected.bmp -n basic:"$(TARGET)"
+
+CPPSHIM		:= ../cppshim
+CPPLIB		:= ../cpplib
+
+# Two include directories on purpose.  cppshim holds the stream and conio
+# shims and is also used by the PC test harness.  cpplib holds the C++ standard
+# library shims (string, cstring, cmath, windows.h, ...) and is only ever on
+# the target's include path: those files are named after real headers, so on a
+# PC they would shadow the system ones and break the host build.
+# -std=gnu++17 so the newer standard library headers (optional, string_view,
+# tuple, if constexpr in user code) are available.  -Wno-register because
+# -std=c++17 removed the register keyword and older console code still uses it,
+# which is a warning there and not worth failing a build over.
+#
+# -fno-threadsafe-statics: the calculator is single threaded, so the guard
+# variables GCC would wrap every function local static in are pure overhead.
+# prizm_support.cpp still defines __cxa_guard_acquire and friends, so a file
+# compiled without the flag links as well.
+CFLAGS		= -Os -Wall -Wno-sign-compare $(MACHDEP) -I$(CPPSHIM) -I$(CPPLIB) $(INCLUDE) -ffunction-sections -fdata-sections
+CXXFLAGS	= $(CFLAGS) -fno-exceptions -fno-rtti -std=gnu++17 -Wno-register -fno-threadsafe-statics
+
+LDFLAGS		= $(MACHDEP) -T../prizm_cpp.x -Wl,-Map,../$(TARGET).map -Wl,-static -Wl,-gc-sections
+
+LIBS		:= -lc -lfxcg -lgcc
+
+LIBDIRS		:=
+
+ifneq ($(BUILD),$(notdir $(CURDIR)))
+
+export OUTPUT	:=	$(CURDIR)/$(TARGET)
+
+export VPATH	:=	$(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
+					$(foreach dir,$(DATA),$(CURDIR)/$(dir))
+
+export DEPSDIR	:=	$(CURDIR)/$(BUILD)
+
+CFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
+CPPFILES	:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
+sFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
+SFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.S)))
+BINFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.*)))
+
+ifeq ($(strip $(CPPFILES)),)
+	export LD	:=	$(CC)
+else
+	export LD	:=	$(CXX)
+endif
+
+export OFILES	:=	$(addsuffix .o,$(BINFILES)) \
+					$(CPPFILES:.cpp=.o) $(CFILES:.c=.o) \
+					$(sFILES:.s=.o) $(SFILES:.S=.o)
+
+export INCLUDE	:=	$(foreach dir,$(INCLUDES), -iquote $(CURDIR)/$(dir)) \
+					$(foreach dir,$(LIBDIRS),-I$(dir)/include) \
+					-I$(CURDIR)/$(BUILD) -I$(LIBFXCG_INC)
+
+export LIBPATHS	:=	$(foreach dir,$(LIBDIRS),-L$(dir)/lib) \
+					-L$(LIBFXCG_LIB)
+
+.PHONY: all clean
+
+all: $(BUILD)
+	@make --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
+
+$(BUILD):
+	@mkdir $@
+
+clean:
+	$(call rmdir,$(BUILD))
+	$(call rm,$(OUTPUT).bin)
+	$(call rm,$(OUTPUT).g3a)
+	$(call rm,$(OUTPUT).map)
+
+else
+
+DEPENDS	:=	$(OFILES:.o=.d)
+
+
+$(OUTPUT).g3a: $(OUTPUT).bin
+$(OUTPUT).bin: $(OFILES)
+
+#---------------------------------------------------------------------------------
+# Entry point of the add-in.
+#
+# The program is compiled as a real C++ main() so the compiler keeps the
+# implicit "return 0;" that only main() gets, and always emits a well formed
+# function epilogue.
+#
+# Do not rename the function with -Dmain=... instead: the compiler would then
+# stop treating it as main(), and falling off the end of a non-void function is
+# undefined behaviour, so -Os deletes the whole return path.  Control then runs
+# off into the literal pool, hits an illegal instruction and the calculator
+# reports a SYSTEM ERROR the moment the program finishes.
+#
+# The symbol is renamed afterwards so it does not clash with the runtime entry
+# point that prizm_support.cpp defines for the crt0 startup code.
+#---------------------------------------------------------------------------------
+$(TARGET).o: $(TARGET).cpp
+	$(CXX) -MMD -MP -MF $(DEPSDIR)/$(TARGET).d $(CXXFLAGS) -c $< -o $@.pre
+	$(OBJCOPY) --redefine-sym _main=_prizm_user_main --redefine-sym main=prizm_user_main $@.pre $@
+
+-include $(DEPENDS)
+
+endif

@@ -1,0 +1,230 @@
+#ifndef PRIZM_CPPSHIM_STRING_VIEW
+#define PRIZM_CPPSHIM_STRING_VIEW
+
+/* <string_view>.
+ *
+ * A non-owning pointer + length over a char range.  It cannot outlive the
+ * string it points at, and it never allocates, which is what makes it the
+ * cheap way to pass "some text" to a function: no copy, no conversion, and it
+ * accepts a string literal, a std::string or a char* with one signature.
+ *
+ * Unlike the real one, c_str() is provided - the console shims have a lot of
+ * libc that wants a null terminated pointer, and a string_view that came from
+ * a string literal or a std::string always has a terminator to offer.  A
+ * string_view sliced out of the middle of a longer string does not, and that
+ * case is the caller's to know about; the comment on c_str() says so.
+ */
+
+#include <__stl_bits>
+#include <cstddef>
+
+namespace std {
+
+class string_view {
+public:
+	typedef char        value_type;
+	typedef char*       pointer;
+	typedef const char* const_pointer;
+	typedef const char& reference;
+	typedef const char& const_reference;
+	typedef size_t      size_type;
+	typedef ptrdiff_t   difference_type;
+	typedef const char* iterator;
+	typedef const char* const_iterator;
+	typedef std::reverse_iterator<iterator>       reverse_iterator;
+	typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
+
+	static const size_type npos = (size_type)-1;
+
+	string_view() : m_p(0), m_n(0) {}
+	string_view(const char* s) : m_p(s), m_n(0) {
+		if (s) { while (s[m_n]) ++m_n; }
+	}
+	string_view(const char* s, size_type n) : m_p(s), m_n(s ? n : 0) {}
+	/* A std::string converts to string_view through its own operator
+	   string_view(), declared in <string>; there is deliberately no
+	   constructor here, because <string> includes this header and a
+	   constructor would need <string> complete to use it - a cycle. */
+
+	string_view(const string_view&) = default;
+	string_view& operator=(const string_view&) = default;
+
+	const char* data() const { return m_p; }
+	size_type size() const { return m_n; }
+	size_type length() const { return m_n; }
+	bool empty() const { return m_n == 0; }
+	size_type max_size() const { return (size_type)-1 / sizeof(char); }
+
+	const char& operator[](size_type i) const { return m_p[i]; }
+	const char& at(size_type i) const {
+		if (i >= m_n) { __stl_fail("std::string_view::at out of range"); return m_p[0]; }
+		return m_p[i];
+	}
+	const char& front() const { return m_p[0]; }
+	const char& back() const { return m_p[m_n - 1]; }
+
+	iterator begin() const { return m_p; }
+	iterator end() const { return m_p + m_n; }
+	const_iterator cbegin() const { return m_p; }
+	const_iterator cend() const { return m_p + m_n; }
+	reverse_iterator rbegin() const { return reverse_iterator(m_p + m_n); }
+	reverse_iterator rend() const { return reverse_iterator(m_p); }
+
+	void remove_prefix(size_type n) {
+		if (n > m_n) n = m_n;
+		m_p += n;
+		m_n -= n;
+	}
+	void remove_suffix(size_type n) {
+		if (n > m_n) n = m_n;
+		m_n -= n;
+	}
+
+	void swap(string_view& o) {
+		const char* p = m_p; m_p = o.m_p; o.m_p = p;
+		size_type n = m_n; m_n = o.m_n; o.m_n = n;
+	}
+
+	/* ---- conversion -------------------------------------------------- */
+
+	/* Only safe when the range is null terminated in the first place - string
+	   literals and whole std::strings are, arbitrary slices are not. */
+	const char* c_str() const { return m_p ? m_p : ""; }
+
+	/* ---- string operations ------------------------------------------- */
+
+	size_type copy(char* out, size_type n, size_type pos = 0) const {
+		if (pos > m_n) { __stl_fail("std::string_view::copy out of range"); return 0; }
+		if (n > m_n - pos) n = m_n - pos;
+		for (size_type i = 0; i < n; i++) out[i] = m_p[pos + i];
+		return n;
+	}
+
+	string_view substr(size_type pos = 0, size_type n = npos) const {
+		if (pos > m_n) { __stl_fail("std::string_view::substr out of range"); return string_view(); }
+		if (n > m_n - pos) n = m_n - pos;
+		return string_view(m_p + pos, n);
+	}
+
+	int compare(string_view o) const {
+		size_type n = m_n < o.m_n ? m_n : o.m_n;
+		for (size_type i = 0; i < n; i++) {
+			if (m_p[i] != o.m_p[i]) return (unsigned char)m_p[i] < (unsigned char)o.m_p[i] ? -1 : 1;
+		}
+		if (m_n == o.m_n) return 0;
+		return m_n < o.m_n ? -1 : 1;
+	}
+
+	bool starts_with(string_view o) const {
+		return m_n >= o.m_n && compare(o.substr(0, o.m_n)) == 0;
+	}
+	bool starts_with(char c) const { return m_n > 0 && front() == c; }
+
+	bool ends_with(string_view o) const {
+		return m_n >= o.m_n && compare(substr(m_n - o.m_n)) == 0;
+	}
+	bool ends_with(char c) const { return m_n > 0 && back() == c; }
+
+	bool contains(string_view o) const { return find(o) != npos; }
+	bool contains(char c) const { return find(c) != npos; }
+
+	size_type find(string_view o, size_type pos = 0) const {
+		if (o.m_n > m_n || pos > m_n - o.m_n) return npos;
+		if (o.m_n == 0) return pos <= m_n ? pos : npos;
+		for (size_type i = pos; i + o.m_n <= m_n; i++) {
+			size_type j = 0;
+			while (j < o.m_n && m_p[i + j] == o.m_p[j]) ++j;
+			if (j == o.m_n) return i;
+		}
+		return npos;
+	}
+	size_type find(char c, size_type pos = 0) const {
+		for (size_type i = pos; i < m_n; i++)
+			if (m_p[i] == c) return i;
+		return npos;
+	}
+
+	size_type rfind(string_view o, size_type pos = npos) const {
+		if (o.m_n > m_n) return npos;
+		size_type start = (pos >= m_n || pos > m_n - o.m_n) ? m_n - o.m_n : pos;
+		for (size_type i = start + 1; i-- > 0; ) {
+			size_type j = 0;
+			while (j < o.m_n && m_p[i + j] == o.m_p[j]) ++j;
+			if (j == o.m_n) return i;
+		}
+		return npos;
+	}
+	size_type rfind(char c, size_type pos = npos) const {
+		if (m_n == 0) return npos;
+		size_type i = (pos >= m_n) ? m_n : pos + 1;
+		while (i-- > 0)
+			if (m_p[i] == c) return i;
+		return npos;
+	}
+
+	size_type find_first_of(string_view o, size_type pos = 0) const {
+		for (size_type i = pos; i < m_n; i++)
+			if (o.find(m_p[i]) != npos) return i;
+		return npos;
+	}
+	size_type find_last_of(string_view o, size_type pos = npos) const {
+		if (m_n == 0) return npos;
+		size_type i = (pos >= m_n) ? m_n : pos + 1;
+		while (i-- > 0)
+			if (o.find(m_p[i]) != npos) return i;
+		return npos;
+	}
+	size_type find_first_not_of(string_view o, size_type pos = 0) const {
+		for (size_type i = pos; i < m_n; i++)
+			if (o.find(m_p[i]) == npos) return i;
+		return npos;
+	}
+	size_type find_last_not_of(string_view o, size_type pos = npos) const {
+		if (m_n == 0) return npos;
+		size_type i = (pos >= m_n) ? m_n : pos + 1;
+		while (i-- > 0)
+			if (o.find(m_p[i]) == npos) return i;
+		return npos;
+	}
+
+private:
+	const char* m_p;
+	size_type   m_n;
+};
+
+/* ---- comparisons (overload sets, so literals work on both sides) ------ */
+
+inline bool operator==(string_view a, string_view b) { return a.compare(b) == 0; }
+inline bool operator!=(string_view a, string_view b) { return a.compare(b) != 0; }
+inline bool operator< (string_view a, string_view b) { return a.compare(b) < 0; }
+inline bool operator> (string_view a, string_view b) { return a.compare(b) > 0; }
+inline bool operator<=(string_view a, string_view b) { return a.compare(b) <= 0; }
+inline bool operator>=(string_view a, string_view b) { return a.compare(b) >= 0; }
+
+/* There is deliberately no swap free function here: the member swap above is
+   all that is needed and an extra overload would be an ambiguity risk. */
+
+/* ---- hash support (FNV-1a, matching the hash in __stl_bits) ----------- */
+
+template<> struct hash<string_view> {
+	/* Same 32-bit FNV-1a as hash<const char*> in __stl_bits, so a string and
+	   a string_view over the same characters hash identically. */
+	size_t operator()(const string_view& s) const {
+		size_t h = 2166136261u;
+		for (size_t i = 0; i < s.size(); i++) {
+			h ^= (unsigned char)s[i];
+			h *= 16777619u;
+		}
+		return h;
+	}
+};
+
+/* ---- literals: sv, operator""sv --------------------------------------- */
+
+namespace literals {
+inline string_view operator"" _sv(const char* s, size_t n) { return string_view(s, n); }
+}
+
+}  /* namespace std */
+
+#endif

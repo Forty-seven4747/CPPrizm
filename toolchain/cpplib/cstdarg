@@ -1,0 +1,12 @@
+#ifndef PRIZM_CPPSHIM_CSTDARG
+#define PRIZM_CPPSHIM_CSTDARG
+
+/* <cstdarg>.  GCC ships stdarg.h, and va_list is a typedef rather than a
+   macro, so unlike the other C wrappers this one can re-export the names. */
+#include <stdarg.h>
+
+namespace std {
+using ::va_list;
+}
+
+#endif

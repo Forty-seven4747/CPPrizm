@@ -1,0 +1,63 @@
+#ifndef PRIZM_CPPSHIM_UTILITY
+#define PRIZM_CPPSHIM_UTILITY
+
+/* <utility>.
+ *
+ * Everything the standard puts here - pair, make_pair, get, tuple_size,
+ * tuple_element, move, forward, swap, declval - is already in __stl_bits,
+ * because the containers need it before any user header is included.  This
+ * file exists so that `#include <utility>` does what a program expects, and
+ * adds the few remaining pieces.
+ */
+#include <__stl_bits>
+#include <initializer_list>
+
+namespace std {
+
+template<class T, class U = T>
+inline T exchange(T& obj, U&& nv) {
+	T old = static_cast<T&&>(obj);
+	obj = static_cast<U&&>(nv);
+	return old;
+}
+
+/* With no exceptions there is no "may throw" distinction to preserve, so this
+   is just a move.  The name has to exist because newer code names it. */
+template<class T>
+inline T&& move_if_noexcept(T& x) {
+	return static_cast<T&&>(x);
+}
+
+/* ---- integer sequences -------------------------------------------- */
+
+template<size_t... I>
+struct index_sequence {
+	typedef index_sequence type;
+	static const size_t size = sizeof...(I);
+};
+
+namespace __stl_seq {
+
+template<size_t N, size_t... I>
+struct build : build<N - 1, N - 1, I...> {};
+
+template<size_t... I>
+struct build<0, I...> {
+	typedef index_sequence<I...> type;
+};
+
+}  /* namespace __stl_seq */
+
+template<size_t N>
+struct make_index_sequence {
+	typedef typename __stl_seq::build<N>::type type;
+};
+
+template<class... T>
+struct index_sequence_for {
+	typedef typename __stl_seq::build<sizeof...(T)>::type type;
+};
+
+}  /* namespace std */
+
+#endif

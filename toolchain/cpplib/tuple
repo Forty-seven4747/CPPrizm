@@ -1,0 +1,411 @@
+#ifndef PRIZM_CPPSHIM_TUPLE
+#define PRIZM_CPPSHIM_TUPLE
+
+/* <tuple>.
+ *
+ * tuple_size / tuple_element / get for pair are in __stl_bits (pair is needed
+ * before this header), and array opts in on its own.  This file adds
+ * std::tuple, make_tuple / tie / forward_as_tuple / ignore / apply /
+ * make_from_tuple / tuple_cat.
+ *
+ * Storage is recursive private inheritance: tuple<A, B, C> derives from
+ * __tuple_leaf<0, A>, which derives from __tuple_leaf<1, B>, and so on.  Each
+ * element therefore lives in a distinct base class, which is what makes get<I>
+ * a plain upcast with no index arithmetic and keeps the empty base
+ * optimisation working.
+ *
+ * Two deliberate simplifications, both documented where they bite:
+ *   - there is no converting constructor from tuple<Us...> or from pair; use
+ *     make_tuple(get<0>(t), get<1>(t)) instead, or tuple_cat;
+ *   - tuple_cat takes two tuples and returns copies.
+ */
+
+#include <__stl_bits>
+#include <type_traits>
+#include <utility>
+#include <initializer_list>
+#include <cstddef>
+
+namespace std {
+
+/* =====================================================================
+   index lookup, used by get<T>
+   ===================================================================== */
+
+template<class T, class... Ts> struct __tuple_index_of;
+
+template<class T, class... R>
+struct __tuple_index_of<T, T, R...> {
+	static const size_t value = 0;
+};
+template<class T, class U, class... R>
+struct __tuple_index_of<T, U, R...> {
+	static const size_t value = 1 + __tuple_index_of<T, R...>::value;
+};
+
+/* =====================================================================
+   tuple_element
+   ===================================================================== */
+
+template<size_t I, class... Ts> struct __tuple_element_impl;
+
+template<class T, class... R>
+struct __tuple_element_impl<0, T, R...> {
+	typedef T type;
+};
+template<size_t I, class T, class... R>
+struct __tuple_element_impl<I, T, R...> {
+	typedef typename __tuple_element_impl<I - 1, R...>::type type;
+};
+
+/* =====================================================================
+   storage
+   ===================================================================== */
+
+template<size_t I, class T>
+struct __tuple_leaf {
+	T m_v;
+
+	__tuple_leaf() : m_v() {}
+
+	/* The constraint is what stops this constructor from hijacking the copy
+	   and move constructors: __tuple_rec derives from __tuple_leaf, so
+	   without it `leaf(o)` inside __tuple_rec's copy constructor would find
+	   a perfect match here and try to initialise the element from the whole
+	   record.  is_base_of<__tuple_leaf, U> is true for every base of U, which
+	   is exactly the set of types that must not take this path. */
+	template<class U,
+	         class = typename enable_if<
+	             !is_base_of<__tuple_leaf,
+	                         typename remove_cv<typename remove_reference<U>::type>::type
+	                        >::value>::type>
+	explicit __tuple_leaf(U&& u) : m_v(static_cast<U&&>(u)) {}
+};
+
+template<size_t I, class... Ts> struct __tuple_rec;
+
+template<size_t I>
+struct __tuple_rec<I> {
+	__tuple_rec() {}
+	__tuple_rec(const __tuple_rec&) {}
+	__tuple_rec(__tuple_rec&&) {}
+};
+
+template<size_t I, class T, class... R>
+struct __tuple_rec<I, T, R...> : __tuple_leaf<I, T>, __tuple_rec<I + 1, R...> {
+	typedef __tuple_leaf<I, T>        leaf;
+	typedef __tuple_rec<I + 1, R...>  rest;
+
+	__tuple_rec() : leaf(), rest() {}
+
+	/* Construct each level from the matching base subobject, never through
+	   the templated constructor above. */
+	__tuple_rec(const __tuple_rec& o)
+	    : leaf(static_cast<const leaf&>(o)), rest(static_cast<const rest&>(o)) {}
+	__tuple_rec(__tuple_rec&& o)
+	    : leaf(static_cast<leaf&&>(o)), rest(static_cast<rest&&>(o)) {}
+
+	template<class U, class... Us>
+	explicit __tuple_rec(U&& u, Us&&... us)
+	    : leaf(static_cast<U&&>(u)), rest(static_cast<Us&&>(us)...) {}
+};
+
+template<size_t I, class T>
+inline T& __stl_leaf_get(__tuple_leaf<I, T>& l) { return l.m_v; }
+template<size_t I, class T>
+inline const T& __stl_leaf_get(const __tuple_leaf<I, T>& l) { return l.m_v; }
+
+/* =====================================================================
+   tuple
+   ===================================================================== */
+
+template<class... Ts>
+class tuple : public __tuple_rec<0, Ts...> {
+	typedef __tuple_rec<0, Ts...> base;
+	typedef tuple<Ts...>          self;
+
+public:
+	typedef tuple type;
+
+	tuple() {}
+
+	/* The element-wise constructor.  Being a template it is never an exact
+	   match for a tuple argument, so the copy and move constructors below
+	   still win for tuple-to-tuple construction. */
+	template<class... Us>
+	explicit tuple(Us&&... us) : base(static_cast<Us&&>(us)...) {}
+
+	tuple(const tuple& o) : base(static_cast<const base&>(o)) {}
+	tuple(tuple&& o) : base(static_cast<base&&>(o)) {}
+
+	tuple& operator=(const tuple& o) {
+		__assign(o);
+		return *this;
+	}
+	tuple& operator=(tuple&& o) {
+		__assign(o);
+		return *this;
+	}
+
+	/* Assign element wise from any other tuple, which is what makes
+	   `tie(x, y) = make_tuple(1, 2);` work: the left hand side is a tuple of
+	   references and the right hand side a tuple of values. */
+	template<class... Us>
+	tuple& operator=(const tuple<Us...>& o) {
+		__assign_other(o, typename make_index_sequence<sizeof...(Ts)>::type());
+		return *this;
+	}
+
+	/* ---- member get (structured bindings prefer this when it exists) --- */
+
+	template<size_t I>
+	typename tuple_element<I, self>::type& get() & {
+		typedef typename tuple_element<I, self>::type E;
+		return __stl_leaf_get<I>(static_cast<__tuple_leaf<I, E>&>(*this));
+	}
+	template<size_t I>
+	const typename tuple_element<I, self>::type& get() const & {
+		typedef typename tuple_element<I, self>::type E;
+		return __stl_leaf_get<I>(static_cast<const __tuple_leaf<I, E>&>(*this));
+	}
+	/* Rvalue overloads are required, not optional: a by-value structured
+	   binding is get<i>(forward<E>(e)), which is an rvalue, so without these
+	   the call falls to the const overload and the binding fails. */
+	template<size_t I>
+	typename tuple_element<I, self>::type&& get() && {
+		return static_cast<typename tuple_element<I, self>::type&&>(get<I>());
+	}
+	template<size_t I>
+	const typename tuple_element<I, self>::type&& get() const && {
+		return static_cast<const typename tuple_element<I, self>::type&&>(get<I>());
+	}
+
+	void swap(tuple& o) {
+		self t(*this);
+		__assign(o);
+		o.__assign(t);
+	}
+
+private:
+	/* Element wise, through get<I>, so a tuple of references assigns what it
+	   refers to instead of trying to rebind the references. */
+	template<class O, size_t... I>
+	void __assign_other(const O& o, index_sequence<I...>) {
+		/* o.template get<I>() rather than a free get<I>(o): inside this class
+		   the unqualified name `get` finds the member function, which would
+		   hide the namespace scope overload. */
+		int dummy[] = { 0, ((void)(this->template get<I>() = o.template get<I>()), 0)... };
+		(void)dummy;
+	}
+	void __assign(const tuple& o) {
+		__assign_other(o, typename make_index_sequence<sizeof...(Ts)>::type());
+	}
+};
+
+/* =====================================================================
+   tuple_size / tuple_element
+   ===================================================================== */
+
+template<class... Ts> struct tuple_size<tuple<Ts...> > {
+	static const size_t value = sizeof...(Ts);
+};
+
+template<size_t I, class... Ts> struct tuple_element<I, tuple<Ts...> > {
+	typedef typename __tuple_element_impl<I, Ts...>::type type;
+};
+
+/* cv-qualified tuple-likes behave like the plain one, which is what lets
+   `auto& [a, b] = t;` work on a const t. */
+template<class T> struct tuple_size<const T> : tuple_size<T> {};
+template<class T> struct tuple_size<volatile T> : tuple_size<T> {};
+template<class T> struct tuple_size<const volatile T> : tuple_size<T> {};
+template<size_t I, class T> struct tuple_element<I, const T> {
+	typedef const typename tuple_element<I, T>::type type;
+};
+template<size_t I, class T> struct tuple_element<I, volatile T> {
+	typedef volatile typename tuple_element<I, T>::type type;
+};
+template<size_t I, class T> struct tuple_element<I, const volatile T> {
+	typedef const volatile typename tuple_element<I, T>::type type;
+};
+
+/* =====================================================================
+   get<I>, get<T>
+   ===================================================================== */
+
+template<size_t I, class... Ts>
+inline typename tuple_element<I, tuple<Ts...> >::type& get(tuple<Ts...>& t) {
+	return t.template get<I>();
+}
+template<size_t I, class... Ts>
+inline const typename tuple_element<I, tuple<Ts...> >::type& get(const tuple<Ts...>& t) {
+	return t.template get<I>();
+}
+
+template<size_t I, class... Ts>
+inline typename tuple_element<I, tuple<Ts...> >::type&& get(tuple<Ts...>&& t) {
+	return static_cast<tuple<Ts...>&&>(t).template get<I>();
+}
+template<size_t I, class... Ts>
+inline const typename tuple_element<I, tuple<Ts...> >::type&& get(const tuple<Ts...>&& t) {
+	return static_cast<const tuple<Ts...>&&>(t).template get<I>();
+}
+
+template<class T, class... Ts>
+inline T& get(tuple<Ts...>& t) {
+	return get<__tuple_index_of<T, Ts...>::value>(t);
+}
+template<class T, class... Ts>
+inline const T& get(const tuple<Ts...>& t) {
+	return get<__tuple_index_of<T, Ts...>::value>(t);
+}
+
+/* =====================================================================
+   comparisons
+   ===================================================================== */
+
+namespace __tuple_cmp {
+
+template<size_t I, size_t N> struct eq {
+	template<class A, class B>
+	static bool run(const A& a, const B& b) {
+		return get<I>(a) == get<I>(b) && eq<I + 1, N>::run(a, b);
+	}
+};
+template<size_t N> struct eq<N, N> {
+	template<class A, class B> static bool run(const A&, const B&) { return true; }
+};
+
+template<size_t I, size_t N> struct lt {
+	template<class A, class B>
+	static bool run(const A& a, const B& b) {
+		if (get<I>(a) < get<I>(b)) return true;
+		if (get<I>(b) < get<I>(a)) return false;
+		return lt<I + 1, N>::run(a, b);
+	}
+};
+template<size_t N> struct lt<N, N> {
+	template<class A, class B> static bool run(const A&, const B&) { return false; }
+};
+
+}  /* namespace __tuple_cmp */
+
+template<class... Ts>
+inline bool operator==(const tuple<Ts...>& a, const tuple<Ts...>& b) {
+	return __tuple_cmp::eq<0, sizeof...(Ts)>::run(a, b);
+}
+template<class... Ts>
+inline bool operator!=(const tuple<Ts...>& a, const tuple<Ts...>& b) { return !(a == b); }
+template<class... Ts>
+inline bool operator<(const tuple<Ts...>& a, const tuple<Ts...>& b) {
+	return __tuple_cmp::lt<0, sizeof...(Ts)>::run(a, b);
+}
+template<class... Ts>
+inline bool operator>(const tuple<Ts...>& a, const tuple<Ts...>& b) { return b < a; }
+template<class... Ts>
+inline bool operator<=(const tuple<Ts...>& a, const tuple<Ts...>& b) { return !(b < a); }
+template<class... Ts>
+inline bool operator>=(const tuple<Ts...>& a, const tuple<Ts...>& b) { return !(a < b); }
+
+template<class... Ts>
+inline void swap(tuple<Ts...>& a, tuple<Ts...>& b) { a.swap(b); }
+
+/* =====================================================================
+   make_tuple / tie / forward_as_tuple / ignore
+   ===================================================================== */
+
+template<class... Ts>
+inline tuple<__decay_t<Ts>...> make_tuple(Ts&&... ts) {
+	return tuple<__decay_t<Ts>...>(static_cast<Ts&&>(ts)...);
+}
+
+template<class... Ts>
+inline tuple<Ts&...> tie(Ts&... ts) {
+	return tuple<Ts&...>(ts...);
+}
+
+template<class... Ts>
+inline tuple<Ts&&...> forward_as_tuple(Ts&&... ts) {
+	return tuple<Ts&&...>(static_cast<Ts&&>(ts)...);
+}
+
+struct __ignore_t {
+	template<class T> const __ignore_t& operator=(const T&) const { return *this; }
+	template<class T> const __ignore_t& operator=(T&&) const { return *this; }
+};
+
+constexpr __ignore_t ignore = __ignore_t();
+
+/* =====================================================================
+   apply / make_from_tuple
+   ===================================================================== */
+
+template<class F, class... Ts, size_t... I>
+inline auto __apply_impl(F&& f, tuple<Ts...>& t, index_sequence<I...>)
+    -> decltype(static_cast<F&&>(f)(get<I>(t)...)) {
+	return static_cast<F&&>(f)(get<I>(t)...);
+}
+template<class F, class... Ts, size_t... I>
+inline auto __apply_impl(F&& f, const tuple<Ts...>& t, index_sequence<I...>)
+    -> decltype(static_cast<F&&>(f)(get<I>(t)...)) {
+	return static_cast<F&&>(f)(get<I>(t)...);
+}
+
+template<class F, class... Ts>
+inline auto apply(F&& f, tuple<Ts...>& t)
+    -> decltype(__apply_impl(static_cast<F&&>(f), t,
+                             typename make_index_sequence<sizeof...(Ts)>::type())) {
+	return __apply_impl(static_cast<F&&>(f), t,
+	                    typename make_index_sequence<sizeof...(Ts)>::type());
+}
+template<class F, class... Ts>
+inline auto apply(F&& f, const tuple<Ts...>& t)
+    -> decltype(__apply_impl(static_cast<F&&>(f), t,
+                             typename make_index_sequence<sizeof...(Ts)>::type())) {
+	return __apply_impl(static_cast<F&&>(f), t,
+	                    typename make_index_sequence<sizeof...(Ts)>::type());
+}
+
+template<class T, class... Ts, size_t... I>
+inline T __make_from_tuple_impl(const tuple<Ts...>& t, index_sequence<I...>) {
+	return T(get<I>(t)...);
+}
+template<class T, class... Ts>
+inline T make_from_tuple(const tuple<Ts...>& t) {
+	return __make_from_tuple_impl<T>(t, typename make_index_sequence<sizeof...(Ts)>::type());
+}
+
+/* =====================================================================
+   tuple_cat (two tuples, copies out)
+   ===================================================================== */
+
+template<class... A, class... B, size_t... IA, size_t... IB>
+inline tuple<__decay_t<A>..., __decay_t<B>...>
+__tuple_cat2(const tuple<A...>& a, const tuple<B...>& b,
+             index_sequence<IA...>, index_sequence<IB...>) {
+	return tuple<__decay_t<A>..., __decay_t<B>...>(
+	    get<IA>(a)..., get<IB>(b)...);
+}
+
+template<class... A, class... B>
+inline tuple<__decay_t<A>..., __decay_t<B>...>
+tuple_cat(const tuple<A...>& a, const tuple<B...>& b) {
+	return __tuple_cat2(a, b,
+	    typename make_index_sequence<sizeof...(A)>::type(),
+	    typename make_index_sequence<sizeof...(B)>::type());
+}
+
+template<class... A, size_t... IA>
+inline tuple<__decay_t<A>...>
+__tuple_cat1(const tuple<A...>& a, index_sequence<IA...>) {
+	return tuple<__decay_t<A>...>(get<IA>(a)...);
+}
+
+template<class... A>
+inline tuple<__decay_t<A>...> tuple_cat(const tuple<A...>& a) {
+	return __tuple_cat1(a, typename make_index_sequence<sizeof...(A)>::type());
+}
+
+}  /* namespace std */
+
+#endif

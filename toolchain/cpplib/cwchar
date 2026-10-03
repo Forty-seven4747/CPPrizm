@@ -1,0 +1,195 @@
+#ifndef PRIZM_CPPLIB_CWCHAR
+#define PRIZM_CPPLIB_CWCHAR
+
+/* Wide-character core.  On sh-eb wchar_t is a built-in 4-byte signed type;
+   wint_t follows the usual unsigned-int choice.  Only the string/memory
+   routines are provided - there is no wide stdio on this platform. */
+
+#include <stddef.h>
+
+namespace std {
+
+typedef unsigned int wint_t;
+typedef struct __mbstate_t { unsigned int __s; } mbstate_t;
+
+const wint_t WEOF = (wint_t)-1;
+
+inline size_t wcslen(const wchar_t* s) {
+	size_t n = 0;
+	while (s[n]) n++;
+	return n;
+}
+
+inline wchar_t* wcscpy(wchar_t* d, const wchar_t* s) {
+	wchar_t* r = d;
+	while ((*d++ = *s++) != 0) {}
+	return r;
+}
+
+inline wchar_t* wcsncpy(wchar_t* d, const wchar_t* s, size_t n) {
+	size_t i = 0;
+	for (; i < n && s[i]; i++) d[i] = s[i];
+	for (; i < n; i++) d[i] = 0;
+	return d;
+}
+
+inline wchar_t* wcscat(wchar_t* d, const wchar_t* s) {
+	wchar_t* r = d;
+	while (*d) d++;
+	while ((*d++ = *s++) != 0) {}
+	return r;
+}
+
+inline wchar_t* wcsncat(wchar_t* d, const wchar_t* s, size_t n) {
+	wchar_t* r = d;
+	size_t i = 0;
+	while (*d) d++;
+	while (i < n && s[i]) { *d++ = s[i++]; }
+	*d = 0;
+	return r;
+}
+
+inline int wcscmp(const wchar_t* a, const wchar_t* b) {
+	while (*a && *a == *b) { a++; b++; }
+	return (int)(*a - *b);
+}
+
+inline int wcsncmp(const wchar_t* a, const wchar_t* b, size_t n) {
+	for (size_t i = 0; i < n; i++) {
+		if (a[i] != b[i]) return (int)(a[i] - b[i]);
+		if (!a[i]) return 0;
+	}
+	return 0;
+}
+
+inline wchar_t* wcschr(const wchar_t* s, wchar_t c) {
+	for (;; s++) {
+		if (*s == c) return (wchar_t*)s;
+		if (!*s) return 0;
+	}
+}
+
+inline wchar_t* wcsrchr(const wchar_t* s, wchar_t c) {
+	wchar_t* r = 0;
+	for (;; s++) {
+		if (*s == c) r = (wchar_t*)s;
+		if (!*s) return r;
+	}
+}
+
+inline size_t wcsspn(const wchar_t* s, const wchar_t* set) {
+	size_t n = 0;
+	for (; s[n]; n++) {
+		if (!wcschr(set, s[n])) break;
+	}
+	return n;
+}
+
+inline size_t wcscspn(const wchar_t* s, const wchar_t* set) {
+	size_t n = 0;
+	for (; s[n]; n++) {
+		if (wcschr(set, s[n])) break;
+	}
+	return n;
+}
+
+inline wchar_t* wcspbrk(const wchar_t* s, const wchar_t* set) {
+	for (; *s; s++)
+		if (wcschr(set, *s)) return (wchar_t*)s;
+	return 0;
+}
+
+inline wchar_t* wcsstr(const wchar_t* h, const wchar_t* n) {
+	if (!*n) return (wchar_t*)h;
+	for (; *h; h++) {
+		const wchar_t* a = h;
+		const wchar_t* b = n;
+		while (*a && *b && *a == *b) { a++; b++; }
+		if (!*b) return (wchar_t*)h;
+	}
+	return 0;
+}
+
+inline wchar_t* wmemcpy(wchar_t* d, const wchar_t* s, size_t n) {
+	for (size_t i = 0; i < n; i++) d[i] = s[i];
+	return d;
+}
+
+inline wchar_t* wmemmove(wchar_t* d, const wchar_t* s, size_t n) {
+	if (d < s) { for (size_t i = 0; i < n; i++) d[i] = s[i]; }
+	else { for (size_t i = n; i > 0; i--) d[i - 1] = s[i - 1]; }
+	return d;
+}
+
+inline wchar_t* wmemset(wchar_t* d, wchar_t c, size_t n) {
+	for (size_t i = 0; i < n; i++) d[i] = c;
+	return d;
+}
+
+inline int wmemcmp(const wchar_t* a, const wchar_t* b, size_t n) {
+	for (size_t i = 0; i < n; i++) {
+		if (a[i] != b[i]) return (int)(a[i] - b[i]);
+	}
+	return 0;
+}
+
+inline wchar_t* wmemchr(const wchar_t* p, wchar_t c, size_t n) {
+	for (size_t i = 0; i < n; i++)
+		if (p[i] == c) return (wchar_t*)(p + i);
+	return 0;
+}
+
+/* Numeric conversions (base 10, no locale) */
+inline long wcstol(const wchar_t* s, wchar_t** end, int base) {
+	long v = 0;
+	int neg = 0, any = 0;
+	size_t i = 0;
+	while (s[i] == ' ') i++;
+	if (s[i] == '+' || s[i] == '-') { neg = (s[i] == '-'); i++; }
+	for (;;) {
+		int d;
+		if (s[i] >= '0' && s[i] <= '9')      d = s[i] - '0';
+		else if (s[i] >= 'a' && s[i] <= 'f') d = s[i] - 'a' + 10;
+		else if (s[i] >= 'A' && s[i] <= 'F') d = s[i] - 'A' + 10;
+		else break;
+		if (d >= base) break;
+		v = v * base + d;
+		any = 1;
+		i++;
+	}
+	if (end) *end = (wchar_t*)(s + (any ? i : 0));
+	return neg ? -v : v;
+}
+
+inline double wcstod(const wchar_t* s, wchar_t** end) {
+	double v = 0.0;
+	int neg = 0, any = 0;
+	size_t i = 0;
+	while (s[i] == ' ') i++;
+	if (s[i] == '+' || s[i] == '-') { neg = (s[i] == '-'); i++; }
+	while (s[i] >= '0' && s[i] <= '9') { v = v * 10.0 + (s[i] - '0'); i++; any = 1; }
+	if (s[i] == '.') {
+		i++;
+		double f = 0.1;
+		while (s[i] >= '0' && s[i] <= '9') { v += (s[i] - '0') * f; f *= 0.1; i++; any = 1; }
+	}
+	if (s[i] == 'e' || s[i] == 'E') {
+		size_t j = i + 1;
+		int eneg = 0, eany = 0;
+		long e = 0;
+		if (s[j] == '+' || s[j] == '-') { eneg = (s[j] == '-'); j++; }
+		while (s[j] >= '0' && s[j] <= '9') { e = e * 10 + (s[j] - '0'); j++; eany = 1; }
+		if (eany) {
+			double m = 1.0;
+			while (e--) m *= 10.0;
+			v = eneg ? v / m : v * m;
+			i = j;
+		}
+	}
+	if (end) *end = (wchar_t*)(s + (any ? i : 0));
+	return neg ? -v : v;
+}
+
+}
+
+#endif

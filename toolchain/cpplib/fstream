@@ -1,0 +1,82 @@
+#ifndef PRIZM_CPPLIB_FSTREAM
+#define PRIZM_CPPLIB_FSTREAM
+
+/* The Prizm SDK exposes no POSIX filesystem, so fstream is a compiling
+   stub: the standard class surface exists, but open() always fails and
+   every read sets failbit.  Programs can still be written against the
+   standard interface and stay portable to a host build. */
+
+#include <iostream>
+#include <ios>
+#include <string>
+
+namespace std {
+
+typedef long streamoff;
+typedef long streampos;
+
+class fstream : public istream, public ostream {
+public:
+	fstream() {}
+	explicit fstream(const char*, int = __in | __out) {}
+	~fstream() {}
+
+	bool is_open() const { return false; }
+	void open(const char*, int = __in | __out) { m_fail = 1; }
+	void close() {}
+
+	/* file-backed positioning is unavailable; calls fail the stream */
+	streampos tellg() { m_fail = 1; return streampos(0); }
+	fstream& seekg(streampos) { m_fail = 1; return *this; }
+	fstream& seekg(streamoff, __seekdir) { m_fail = 1; return *this; }
+	streampos tellp() { m_fail = 1; return streampos(0); }
+	fstream& seekp(streampos) { m_fail = 1; return *this; }
+	fstream& seekp(streamoff, __seekdir) { m_fail = 1; return *this; }
+};
+
+class ifstream : public istream {
+public:
+	ifstream() {}
+	explicit ifstream(const char*, int = __in) { m_fail = 1; }
+	~ifstream() {}
+
+	bool is_open() const { return false; }
+	void open(const char*, int = __in) { m_fail = 1; }
+	void close() {}
+
+	streampos tellg() { m_fail = 1; return streampos(0); }
+	ifstream& seekg(streampos) { m_fail = 1; return *this; }
+	ifstream& seekg(streamoff, __seekdir) { m_fail = 1; return *this; }
+};
+
+class ofstream : public ostream {
+public:
+	ofstream() : m_bad(false) {}
+	explicit ofstream(const char*, int = __out) : m_bad(true) {}
+	~ofstream() {}
+
+	bool is_open() const { return false; }
+	void open(const char*, int = __out) { m_bad = true; }
+	void close() {}
+
+	bool fail() const { return m_bad; }
+	bool good() const { return !m_bad; }
+	explicit operator bool() const { return !m_bad; }
+	bool operator!() const { return m_bad; }
+
+	ostream& put(char c) { m_bad = true; (void)c; return *this; }
+	ostream& write(const char* s, long n) { m_bad = true; (void)s; (void)n; return *this; }
+	ostream& flush() { return *this; }
+
+	streampos tellp() { m_bad = true; return streampos(0); }
+	ofstream& seekp(streampos) { m_bad = true; return *this; }
+	ofstream& seekp(streamoff, __seekdir) { m_bad = true; return *this; }
+private:
+	bool m_bad;
+};
+
+inline ofstream& endl(ofstream& os) { os.put('\n'); return os; }
+
+}
+
+#endif

@@ -1,0 +1,932 @@
+#ifndef PRIZM_STL_BITS
+#define PRIZM_STL_BITS
+
+/* ---------------------------------------------------------------------------
+   Shared machinery for the hand written standard library.
+
+   The Prizm has no libstdc++, so every standard header in this directory is
+   written from scratch.  They all need the same handful of things - move and
+   forward, pair, swap, the comparator functors, iterator categories, an
+   allocator - so those live here and the individual headers (utility,
+   type_traits, iterator, limits, functional, memory) simply pull this in and
+   add what is specific to them.
+
+   Rules this whole library follows:
+
+     - No exceptions.  The build uses -fno-exceptions, so throw is not even
+       available.  Where the standard would throw, these headers call
+       prizm_stl_fatal() instead, which prints the reason on the console and
+       waits for a key.  Allocation failure is the one exception: a container
+       that cannot grow simply stays as it was, the same way the string shim
+       already behaved.
+     - No RTTI, no typeid, no dynamic_cast.
+     - No <cstdlib> / <cmath> / <ctime> includes, on purpose.  Those three
+       shadow the host's own headers when this directory is on a PC include
+       path, which breaks the compiler's own standard library, so the headers
+       that must stay host compilable reach for the plain C headers
+       (<stdlib.h>, <string.h>) instead.
+   --------------------------------------------------------------------------- */
+
+#include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* =====================================================================
+   placement new
+
+   Belongs in <new> per the standard, but every container needs it and <new>
+   includes this file, so it is defined here once, at global scope as the
+   standard requires.
+   ===================================================================== */
+
+inline void* operator new(size_t, void* p) { return p; }
+inline void* operator new[](size_t, void* p) { return p; }
+inline void operator delete(void*, void*) {}
+inline void operator delete[](void*, void*) {}
+
+namespace std {
+
+/* size_t is in the SDK's stddef.h, but ptrdiff_t is not - that header is a
+   minimal freestanding one.  The compiler knows the right type for the target
+   and offers it as __PTRDIFF_TYPE__, which is also how libstdc++ gets it, so
+   no header has to be involved and nothing here can be shadowed. */
+typedef __PTRDIFF_TYPE__ ptrdiff_t;
+using ::size_t;
+
+typedef size_t          size_type;
+typedef ptrdiff_t       difference_type;
+
+/* =====================================================================
+   failure hook
+
+   Declared weak so the headers stay usable without the runtime: if nothing
+   defines it the check simply does nothing.  prizm_rt.cpp normally does.
+   ===================================================================== */
+
+extern "C" void prizm_stl_fatal(const char* what) __attribute__((weak));
+
+inline void __stl_fail(const char* what) {
+	if (prizm_stl_fatal) prizm_stl_fatal(what);
+}
+
+/* =====================================================================
+   raw memory
+
+   malloc / realloc / free are in libc, which libfxcg backs with the system
+   heap.  operator new would be the C++ way to reach it, but a container wants
+   to report failure rather than to be handed a null pointer, so the helpers
+   below go straight to malloc and let the caller decide.
+   ===================================================================== */
+
+inline void* __stl_alloc_bytes(size_t n) {
+	if (n == 0) n = 1;
+	return malloc(n);
+}
+
+inline void* __stl_realloc_bytes(void* p, size_t n) {
+	if (n == 0) n = 1;
+	return realloc(p, n);
+}
+
+inline void __stl_free_bytes(void* p) { if (p) free(p); }
+
+/* =====================================================================
+   type traits kernel
+
+   Only what the library itself needs; type_traits adds the public spelling.
+   ===================================================================== */
+
+template<class T> struct remove_reference      { typedef T type; };
+template<class T> struct remove_reference<T&>  { typedef T type; };
+template<class T> struct remove_reference<T&&> { typedef T type; };
+
+template<class T> struct remove_const          { typedef T type; };
+template<class T> struct remove_const<const T> { typedef T type; };
+
+template<class T> struct remove_pointer                    { typedef T type; };
+template<class T> struct remove_pointer<T*>                { typedef T type; };
+template<class T> struct remove_pointer<T* const>          { typedef T type; };
+
+template<bool B, class T = void> struct enable_if {};
+template<class T> struct enable_if<true, T> { typedef T type; };
+
+template<class T> struct __stl_is_pod { static const bool value = __is_trivially_copyable(T); };
+template<class T> struct __stl_is_enum { static const bool value = __is_enum(T); };
+
+/* Trivially copyable means the bytes can be moved with memmove and a buffer
+   can grow by reallocating.  Everything else has to be moved element by
+   element so that a non-trivial copy constructor still runs. */
+template<class T> struct __stl_trivial {
+	static const bool value = __is_trivially_copyable(T);
+};
+
+/* =====================================================================
+   move, forward, swap
+   ===================================================================== */
+
+template<class T>
+inline typename remove_reference<T>::type&& move(T&& t) {
+	return static_cast<typename remove_reference<T>::type&&>(t);
+}
+
+template<class T>
+inline T&& forward(typename remove_reference<T>::type& t) {
+	return static_cast<T&&>(t);
+}
+
+template<class T>
+inline T&& forward(typename remove_reference<T>::type&& t) {
+	return static_cast<T&&>(t);
+}
+
+template<class T> inline void swap(T& a, T& b) {
+	T t = static_cast<T&&>(a);
+	a = static_cast<T&&>(b);
+	b = static_cast<T&&>(t);
+}
+
+template<class T, size_t N> inline void swap(T (&a)[N], T (&b)[N]) {
+	for (size_t i = 0; i < N; i++) swap(a[i], b[i]);
+}
+
+template<class T> inline void swap(T*& a, T*& b) {
+	T* t = a; a = b; b = t;
+}
+
+template<class T> inline T* addressof(T& r) { return &r; }
+
+template<class T> inline T&& __stl_declval() { return static_cast<T&&>(*(T*)0); }
+
+/* Public name.  <utility> also provides it; having it here means every header
+   that includes __stl_bits (i.e. all of them) can use it in a trailing return
+   type without pulling in <utility>. */
+template<class T> inline T&& declval() { return static_cast<T&&>(*(T*)0); }
+
+/* =====================================================================
+   pair and get
+   ===================================================================== */
+
+/* Declared here, defined in tuple.  Structured bindings on a pair
+   (for (auto& [k, v] : some_map)) go through these three names, so they have
+   to exist even for programs that never include <tuple>. */
+template<class T> struct tuple_size;
+template<size_t I, class T> struct tuple_element;
+
+template<class A, class B>
+class pair {
+public:
+	typedef A first_type;
+	typedef B second_type;
+
+	A first;
+	B second;
+
+	pair() : first(), second() {}
+	pair(const A& a, const B& b) : first(a), second(b) {}
+	template<class U, class V>
+	pair(const pair<U, V>& p) : first(p.first), second(p.second) {}
+
+	template<class U, class V>
+	pair& operator=(const pair<U, V>& p) {
+		first = p.first;
+		second = p.second;
+		return *this;
+	}
+
+	void swap(pair& o) {
+		using std::swap;
+		swap(first, o.first);
+		swap(second, o.second);
+	}
+};
+
+template<class A, class B>
+inline pair<A, B> make_pair(A a, B b) { return pair<A, B>(a, b); }
+
+template<class A, class B>
+inline bool operator==(const pair<A, B>& x, const pair<A, B>& y) {
+	return x.first == y.first && x.second == y.second;
+}
+template<class A, class B>
+inline bool operator!=(const pair<A, B>& x, const pair<A, B>& y) {
+	return !(x == y);
+}
+template<class A, class B>
+inline bool operator<(const pair<A, B>& x, const pair<A, B>& y) {
+	return x.first < y.first || (!(y.first < x.first) && x.second < y.second);
+}
+template<class A, class B>
+inline bool operator>(const pair<A, B>& x, const pair<A, B>& y) { return y < x; }
+template<class A, class B>
+inline bool operator<=(const pair<A, B>& x, const pair<A, B>& y) { return !(y < x); }
+template<class A, class B>
+inline bool operator>=(const pair<A, B>& x, const pair<A, B>& y) { return !(x < y); }
+
+template<class A, class B> inline void swap(pair<A, B>& x, pair<A, B>& y) { x.swap(y); }
+
+template<class A, class B> struct tuple_size<pair<A, B> > {
+	static const size_t value = 2;
+};
+template<class A, class B> struct tuple_element<0, pair<A, B> > { typedef A type; };
+template<class A, class B> struct tuple_element<1, pair<A, B> > { typedef B type; };
+
+template<size_t I, class A, class B>
+struct __stl_pair_get;
+template<class A, class B>
+struct __stl_pair_get<0, A, B> {
+	static A& get(pair<A, B>& p) { return p.first; }
+	static const A& get(const pair<A, B>& p) { return p.first; }
+};
+template<class A, class B>
+struct __stl_pair_get<1, A, B> {
+	static B& get(pair<A, B>& p) { return p.second; }
+	static const B& get(const pair<A, B>& p) { return p.second; }
+};
+
+template<size_t I, class A, class B>
+inline typename tuple_element<I, pair<A, B> >::type& get(pair<A, B>& p) {
+	return __stl_pair_get<I, A, B>::get(p);
+}
+template<size_t I, class A, class B>
+inline const typename tuple_element<I, pair<A, B> >::type& get(const pair<A, B>& p) {
+	return __stl_pair_get<I, A, B>::get(p);
+}
+
+/* The rvalue overloads are not optional decoration.  A by-value structured
+   binding - `auto [k, v] = p;` - is specified as get<i>(forward<E>(e)), and
+   forwarding a by-value E produces an rvalue, so with only the lvalue and
+   const overloads present the call lands on the const one and the binding
+   fails to compile ("binding reference of type int& to const int"). */
+template<size_t I, class A, class B>
+inline typename tuple_element<I, pair<A, B> >::type&& get(pair<A, B>&& p) {
+	return static_cast<typename tuple_element<I, pair<A, B> >::type&&>(
+	    get<I>(static_cast<pair<A, B>&>(p)));
+}
+template<size_t I, class A, class B>
+inline const typename tuple_element<I, pair<A, B> >::type&& get(const pair<A, B>&& p) {
+	return static_cast<const typename tuple_element<I, pair<A, B> >::type&&>(
+	    get<I>(static_cast<const pair<A, B>&>(p)));
+}
+
+/* =====================================================================
+   comparator and arithmetic functors
+
+   <functional> re-exports these; the ordered containers need less<> before
+   functional is included, so they are defined here.
+   ===================================================================== */
+
+template<class T> struct less {
+	typedef T first_argument_type;
+	typedef T second_argument_type;
+	typedef bool result_type;
+	bool operator()(const T& a, const T& b) const { return a < b; }
+};
+template<class T> struct greater {
+	bool operator()(const T& a, const T& b) const { return b < a; }
+};
+template<class T> struct less_equal {
+	bool operator()(const T& a, const T& b) const { return !(b < a); }
+};
+template<class T> struct greater_equal {
+	bool operator()(const T& a, const T& b) const { return !(a < b); }
+};
+template<class T> struct equal_to {
+	typedef T first_argument_type;
+	typedef T second_argument_type;
+	typedef bool result_type;
+	bool operator()(const T& a, const T& b) const { return a == b; }
+};
+template<class T> struct not_equal_to {
+	bool operator()(const T& a, const T& b) const { return !(a == b); }
+};
+template<class T> struct plus {
+	typedef T result_type;
+	T operator()(const T& a, const T& b) const { return a + b; }
+};
+template<class T> struct minus {
+	T operator()(const T& a, const T& b) const { return a - b; }
+};
+template<class T> struct multiplies {
+	T operator()(const T& a, const T& b) const { return a * b; }
+};
+template<class T> struct divides {
+	T operator()(const T& a, const T& b) const { return a / b; }
+};
+template<class T> struct modulus {
+	T operator()(const T& a, const T& b) const { return a % b; }
+};
+template<class T> struct negate {
+	T operator()(const T& a) const { return -a; }
+};
+template<class T> struct logical_and {
+	bool operator()(const T& a, const T& b) const { return a && b; }
+};
+template<class T> struct logical_or {
+	bool operator()(const T& a, const T& b) const { return a || b; }
+};
+template<class T> struct logical_not {
+	bool operator()(const T& a) const { return !a; }
+};
+template<class T> struct bit_and {
+	T operator()(const T& a, const T& b) const { return (T)(a & b); }
+};
+template<class T> struct bit_or {
+	T operator()(const T& a, const T& b) const { return (T)(a | b); }
+};
+template<class T> struct bit_xor {
+	T operator()(const T& a, const T& b) const { return (T)(a ^ b); }
+};
+
+/* Old code inherits from these two; they are gone from the modern standard
+   but harmless to keep, which saves a compile error in a 2010s project. */
+template<class Arg, class Result>
+struct unary_function {
+	typedef Arg argument_type;
+	typedef Result result_type;
+};
+template<class Arg1, class Arg2, class Result>
+struct binary_function {
+	typedef Arg1 first_argument_type;
+	typedef Arg2 second_argument_type;
+	typedef Result result_type;
+};
+
+/* =====================================================================
+   hash
+
+   Only what a hash table needs.  Integral keys hash to themselves mixed a
+   little, pointers and C strings get their own case, and anything else with a
+   conversion to size_t falls back to that.
+   ===================================================================== */
+
+inline size_t __stl_hash_bytes(const void* p, size_t n) {
+	/* FNV-1a, 32 bit.  Short and good enough for a calculator. */
+	const unsigned char* s = (const unsigned char*)p;
+	size_t h = 2166136261u;
+	for (size_t i = 0; i < n; i++) {
+		h ^= s[i];
+		h *= 16777619u;
+	}
+	return h;
+}
+
+template<class T> struct hash {
+	size_t operator()(const T& v) const {
+		return __stl_hash_bytes(&v, sizeof(T));
+	}
+};
+
+#define PRIZM_STL_HASH_INT(T) \
+	template<> struct hash<T> { \
+		size_t operator()(T v) const { return (size_t)v * 2654435761u; } \
+	};
+PRIZM_STL_HASH_INT(bool)
+PRIZM_STL_HASH_INT(char)
+PRIZM_STL_HASH_INT(signed char)
+PRIZM_STL_HASH_INT(unsigned char)
+PRIZM_STL_HASH_INT(short)
+PRIZM_STL_HASH_INT(unsigned short)
+PRIZM_STL_HASH_INT(int)
+PRIZM_STL_HASH_INT(unsigned int)
+PRIZM_STL_HASH_INT(long)
+PRIZM_STL_HASH_INT(unsigned long)
+PRIZM_STL_HASH_INT(long long)
+PRIZM_STL_HASH_INT(unsigned long long)
+#undef PRIZM_STL_HASH_INT
+
+template<> struct hash<float> {
+	size_t operator()(float v) const { return __stl_hash_bytes(&v, sizeof(v)); }
+};
+template<> struct hash<double> {
+	size_t operator()(double v) const { return __stl_hash_bytes(&v, sizeof(v)); }
+};
+template<class T> struct hash<T*> {
+	size_t operator()(T* v) const { return (size_t)v * 2654435761u; }
+};
+template<> struct hash<const char*> {
+	size_t operator()(const char* s) const {
+		return s ? __stl_hash_bytes(s, strlen(s)) : 0;
+	}
+};
+template<> struct hash<char*> {
+	size_t operator()(char* s) const { return hash<const char*>()(s); }
+};
+
+/* =====================================================================
+   iterator categories and traits
+   ===================================================================== */
+
+struct input_iterator_tag {};
+struct output_iterator_tag {};
+struct forward_iterator_tag : public input_iterator_tag {};
+struct bidirectional_iterator_tag : public forward_iterator_tag {};
+struct random_access_iterator_tag : public bidirectional_iterator_tag {};
+
+template<class Category, class T, class Distance = ptrdiff_t,
+         class Pointer = T*, class Reference = T&>
+struct iterator {
+	typedef Category  iterator_category;
+	typedef T         value_type;
+	typedef Distance  difference_type;
+	typedef Pointer   pointer;
+	typedef Reference reference;
+};
+
+template<class It> struct iterator_traits {
+	typedef typename It::iterator_category iterator_category;
+	typedef typename It::value_type        value_type;
+	typedef typename It::difference_type   difference_type;
+	typedef typename It::pointer           pointer;
+	typedef typename It::reference         reference;
+};
+
+/* Plain pointers are iterators too, and this is the specialisation that makes
+   every algorithm work on a raw array. */
+template<class T> struct iterator_traits<T*> {
+	typedef random_access_iterator_tag iterator_category;
+	typedef T                          value_type;
+	typedef ptrdiff_t                  difference_type;
+	typedef T*                         pointer;
+	typedef T&                         reference;
+};
+template<class T> struct iterator_traits<const T*> {
+	typedef random_access_iterator_tag iterator_category;
+	typedef T                          value_type;
+	typedef ptrdiff_t                  difference_type;
+	typedef const T*                   pointer;
+	typedef const T&                   reference;
+};
+
+/* =====================================================================
+   distance, advance, next, prev
+   ===================================================================== */
+
+template<class It> inline difference_type __stl_distance(It first, It last, random_access_iterator_tag) {
+	return last - first;
+}
+template<class It> inline difference_type __stl_distance(It first, It last, input_iterator_tag) {
+	difference_type n = 0;
+	while (first != last) { ++first; ++n; }
+	return n;
+}
+template<class It> inline difference_type distance(It first, It last) {
+	return __stl_distance(first, last,
+	                      typename iterator_traits<It>::iterator_category());
+}
+
+template<class It, class D> inline void __stl_advance(It& it, D n, random_access_iterator_tag) {
+	it += n;
+}
+template<class It, class D> inline void __stl_advance(It& it, D n, bidirectional_iterator_tag) {
+	if (n > 0) while (n--) ++it;
+	else while (n++) --it;
+}
+template<class It, class D> inline void __stl_advance(It& it, D n, input_iterator_tag) {
+	while (n--) ++it;
+}
+template<class It, class D> inline void advance(It& it, D n) {
+	__stl_advance(it, n, typename iterator_traits<It>::iterator_category());
+}
+template<class It> inline It next(It it, difference_type n = 1) { advance(it, n); return it; }
+template<class It> inline It prev(It it, difference_type n = 1) { advance(it, -n); return it; }
+
+/* =====================================================================
+   reverse_iterator
+
+   Every container's rbegin/rend is built on this.  Its operator* relies on
+   the base iterator supporting -- and *, which vector, deque, list, map and
+   the hash tables all do.
+   ===================================================================== */
+
+template<class It>
+class reverse_iterator {
+public:
+	typedef typename iterator_traits<It>::iterator_category iterator_category;
+	typedef typename iterator_traits<It>::value_type        value_type;
+	typedef typename iterator_traits<It>::difference_type   difference_type;
+	typedef typename iterator_traits<It>::pointer           pointer;
+	typedef typename iterator_traits<It>::reference         reference;
+	typedef It                                              iterator_type;
+
+	reverse_iterator() : m_base() {}
+	explicit reverse_iterator(It it) : m_base(it) {}
+	template<class U> reverse_iterator(const reverse_iterator<U>& o) : m_base(o.base()) {}
+
+	It base() const { return m_base; }
+	reference operator*() const { It t = m_base; --t; return *t; }
+	pointer operator->() const { It t = m_base; --t; return &*t; }
+	reference operator[](difference_type n) const { return *(*this + n); }
+
+	reverse_iterator& operator++()    { --m_base; return *this; }
+	reverse_iterator  operator++(int) { reverse_iterator t(*this); --m_base; return t; }
+	reverse_iterator& operator--()    { ++m_base; return *this; }
+	reverse_iterator  operator--(int) { reverse_iterator t(*this); ++m_base; return t; }
+	reverse_iterator& operator+=(difference_type n) { m_base -= n; return *this; }
+	reverse_iterator& operator-=(difference_type n) { m_base += n; return *this; }
+	reverse_iterator  operator+(difference_type n) const { return reverse_iterator(m_base - n); }
+	reverse_iterator  operator-(difference_type n) const { return reverse_iterator(m_base + n); }
+
+private:
+	It m_base;
+};
+
+template<class It>
+inline bool operator==(const reverse_iterator<It>& a, const reverse_iterator<It>& b) {
+	return a.base() == b.base();
+}
+template<class It>
+inline bool operator!=(const reverse_iterator<It>& a, const reverse_iterator<It>& b) {
+	return !(a == b);
+}
+template<class It>
+inline bool operator<(const reverse_iterator<It>& a, const reverse_iterator<It>& b) {
+	return b.base() < a.base();
+}
+template<class It>
+inline typename reverse_iterator<It>::difference_type
+operator-(const reverse_iterator<It>& a, const reverse_iterator<It>& b) {
+	return b.base() - a.base();
+}
+
+/* =====================================================================
+   insert iterators
+   ===================================================================== */
+
+template<class Container>
+class back_insert_iterator {
+public:
+	typedef output_iterator_tag iterator_category;
+	typedef void                value_type;
+	typedef void                difference_type;
+	typedef void                pointer;
+	typedef void                reference;
+
+	explicit back_insert_iterator(Container& c) : m_c(&c) {}
+	back_insert_iterator& operator=(const typename Container::value_type& v) {
+		m_c->push_back(v);
+		return *this;
+	}
+	back_insert_iterator& operator*()     { return *this; }
+	back_insert_iterator& operator++()    { return *this; }
+	back_insert_iterator& operator++(int) { return *this; }
+
+protected:
+	Container* m_c;
+};
+
+template<class Container>
+inline back_insert_iterator<Container> back_inserter(Container& c) {
+	return back_insert_iterator<Container>(c);
+}
+
+template<class Container>
+class front_insert_iterator {
+public:
+	typedef output_iterator_tag iterator_category;
+	typedef void                value_type;
+	typedef void                difference_type;
+	typedef void                pointer;
+	typedef void                reference;
+
+	explicit front_insert_iterator(Container& c) : m_c(&c) {}
+	front_insert_iterator& operator=(const typename Container::value_type& v) {
+		m_c->push_front(v);
+		return *this;
+	}
+	front_insert_iterator& operator*()     { return *this; }
+	front_insert_iterator& operator++()    { return *this; }
+	front_insert_iterator& operator++(int) { return *this; }
+
+protected:
+	Container* m_c;
+};
+
+template<class Container>
+inline front_insert_iterator<Container> front_inserter(Container& c) {
+	return front_insert_iterator<Container>(c);
+}
+
+/* =====================================================================
+   char_traits
+
+   Nothing here is a template over the character type in practice - the
+   console is ASCII - but code that names std::char_traits<char> has to find
+   it.
+   ===================================================================== */
+
+template<class CharT> struct char_traits {
+	static size_t length(const CharT* s) { size_t n = 0; while (s[n]) n++; return n; }
+	static int compare(const CharT* a, const CharT* b, size_t n) {
+		for (size_t i = 0; i < n; i++) { if (a[i] != b[i]) return (int)(a[i] - b[i]); }
+		return 0;
+	}
+	static CharT* copy(CharT* d, const CharT* s, size_t n) {
+		for (size_t i = 0; i < n; i++) d[i] = s[i];
+		return d;
+	}
+	static CharT* move(CharT* d, const CharT* s, size_t n) {
+		memmove(d, s, n * sizeof(CharT));
+		return d;
+	}
+	static CharT* assign(CharT* d, size_t n, CharT c) {
+		for (size_t i = 0; i < n; i++) d[i] = c;
+		return d;
+	}
+	static const CharT* find(const CharT* s, size_t n, CharT c) {
+		for (size_t i = 0; i < n; i++) if (s[i] == c) return s + i;
+		return 0;
+	}
+	static bool eq(CharT a, CharT b) { return a == b; }
+	static bool lt(CharT a, CharT b) { return a < b; }
+};
+
+/* =====================================================================
+   allocator
+
+   The container implementation calls the __stl_* helpers directly, but
+   allocator<T> has to exist because programs pass it around and because
+   allocator_traits-style code names it.
+   ===================================================================== */
+
+template<class T>
+class allocator {
+public:
+	typedef T                 value_type;
+	typedef size_t            size_type;
+	typedef ptrdiff_t         difference_type;
+	typedef T*                pointer;
+	typedef const T*          const_pointer;
+	typedef T&                reference;
+	typedef const T&          const_reference;
+
+	typedef T                 rebind_type;
+
+	allocator() {}
+	allocator(const allocator&) {}
+	template<class U> allocator(const allocator<U>&) {}
+	template<class U> struct rebind { typedef allocator<U> other; };
+
+	pointer allocate(size_type n, const void* = 0) {
+		return (pointer)__stl_alloc_bytes(n * sizeof(T));
+	}
+	void deallocate(pointer p, size_type = 0) { __stl_free_bytes(p); }
+
+	void construct(pointer p, const T& v) { new ((void*)p) T(v); }
+	template<class U, class... Args>
+	void construct(U* p, Args&&... args) { new ((void*)p) U(forward<Args>(args)...); }
+	void destroy(pointer p) { (void)p; p->~T(); }
+	template<class U> void destroy(U* p) { (void)p; p->~U(); }
+
+	size_type max_size() const { return (size_type)-1 / sizeof(T); }
+};
+
+template<class T, class U>
+inline bool operator==(const allocator<T>&, const allocator<U>&) { return true; }
+template<class T, class U>
+inline bool operator!=(const allocator<T>&, const allocator<U>&) { return false; }
+
+/* =====================================================================
+   uninitialised memory helpers
+
+   A container grows in three steps: get bytes, build elements into them, drop
+   the old ones.  These are the middle step, and the memcpy shortcut only
+   applies when the type is trivially copyable.
+   ===================================================================== */
+
+template<class T, class... Args>
+inline void __stl_construct(T* p, Args&&... args) {
+	new ((void*)p) T(forward<Args>(args)...);
+}
+template<class T> inline void __stl_destroy(T* p) { p->~T(); }
+
+template<class T>
+inline void __stl_destroy_range(T* first, T* last) {
+	if (!__stl_trivial<T>::value)
+		for (; first != last; ++first) first->~T();
+}
+
+template<class T>
+inline T* __stl_uninit_fill_n(T* first, size_t n, const T& v) {
+	T* cur = first;
+	for (; n > 0; --n, ++cur) __stl_construct(cur, v);
+	return cur;
+}
+
+/* Build n elements by moving from src.  Plain byte copy when that is legal. */
+template<class T>
+inline T* __stl_uninit_move_n(T* first, T* src, size_t n) {
+	if (__stl_trivial<T>::value) {
+		if (n) memcpy((void*)first, (const void*)src, n * sizeof(T));
+		return first + n;
+	}
+	T* cur = first;
+	for (; n > 0; --n, ++cur, ++src) __stl_construct(cur, static_cast<T&&>(*src));
+	return cur;
+}
+
+template<class T>
+inline T* __stl_uninit_copy_n(T* first, const T* src, size_t n) {
+	T* cur = first;
+	for (; n > 0; --n, ++cur, ++src) __stl_construct(cur, *src);
+	return cur;
+}
+
+/* Move a whole block, used by insert/erase to shift the tail.  memmove has to
+   be used rather than memcpy because the ranges overlap. */
+template<class T>
+inline void __stl_move_block(T* dst, T* src, size_t n) {
+	if (__stl_trivial<T>::value) {
+		if (n) memmove((void*)dst, (const void*)src, n * sizeof(T));
+		return;
+	}
+	if (dst < src) for (size_t i = 0; i < n; i++) dst[i] = static_cast<T&&>(src[i]);
+	else for (size_t i = n; i > 0; i--) dst[i - 1] = static_cast<T&&>(src[i - 1]);
+}
+
+/* =====================================================================
+   fill / copy helpers the containers and <algorithm> share
+   ===================================================================== */
+
+template<class T>
+inline T* __stl_fill_n(T* first, size_t n, const T& v) {
+	for (; n > 0; --n, ++first) *first = v;
+	return first;
+}
+
+template<class Out, class In>
+inline Out __stl_copy(Out out, In first, In last) {
+	for (; first != last; ++out, ++first) *out = *first;
+	return out;
+}
+
+/* =====================================================================
+   numeric_limits
+
+   Enough for <limits> and for the algorithms in <random> and <complex>.
+   ===================================================================== */
+
+template<class T> struct numeric_limits {
+	static const bool is_specialized = false;
+	static T min() { return T(); }
+	static T max() { return T(); }
+	static T lowest() { return T(); }
+	static const int digits = 0;
+	static const bool is_signed = false;
+	static const bool is_integer = false;
+	static const bool is_exact = false;
+};
+
+template<> struct numeric_limits<char> {
+	static const bool is_specialized = true;
+	static const int digits = 7;
+	static const bool is_signed = true;
+	static const bool is_integer = true;
+	static const bool is_exact = true;
+	static char min() { return (char)(-128); }
+	static char max() { return (char)127; }
+	static char lowest() { return (char)(-128); }
+};
+
+template<> struct numeric_limits<signed char> {
+	static const bool is_specialized = true;
+	static const int digits = 7;
+	static const bool is_signed = true;
+	static const bool is_integer = true;
+	static const bool is_exact = true;
+	static signed char min() { return (signed char)(-128); }
+	static signed char max() { return (signed char)127; }
+	static signed char lowest() { return (signed char)(-128); }
+};
+
+template<> struct numeric_limits<unsigned char> {
+	static const bool is_specialized = true;
+	static const int digits = 8;
+	static const bool is_signed = false;
+	static const bool is_integer = true;
+	static const bool is_exact = true;
+	static unsigned char min() { return 0; }
+	static unsigned char max() { return 255; }
+	static unsigned char lowest() { return 0; }
+};
+
+template<> struct numeric_limits<short> {
+	static const bool is_specialized = true;
+	static const int digits = 15;
+	static const bool is_signed = true;
+	static const bool is_integer = true;
+	static const bool is_exact = true;
+	static short min() { return (short)(-32768); }
+	static short max() { return (short)32767; }
+	static short lowest() { return (short)(-32768); }
+};
+
+template<> struct numeric_limits<unsigned short> {
+	static const bool is_specialized = true;
+	static const int digits = 16;
+	static const bool is_signed = false;
+	static const bool is_integer = true;
+	static const bool is_exact = true;
+	static unsigned short min() { return 0; }
+	static unsigned short max() { return 65535; }
+	static unsigned short lowest() { return 0; }
+};
+
+template<> struct numeric_limits<int> {
+	static const bool is_specialized = true;
+	static const int digits = 31;
+	static const bool is_signed = true;
+	static const bool is_integer = true;
+	static const bool is_exact = true;
+	static int min() { return (int)0x80000000; }
+	static int max() { return 2147483647; }
+	static int lowest() { return (int)0x80000000; }
+};
+
+template<> struct numeric_limits<unsigned int> {
+	static const bool is_specialized = true;
+	static const int digits = 32;
+	static const bool is_signed = false;
+	static const bool is_integer = true;
+	static const bool is_exact = true;
+	static unsigned int min() { return 0; }
+	static unsigned int max() { return 4294967295u; }
+	static unsigned int lowest() { return 0; }
+};
+
+template<> struct numeric_limits<long> {
+	static const bool is_specialized = true;
+	static const int digits = 31;
+	static const bool is_signed = true;
+	static const bool is_integer = true;
+	static const bool is_exact = true;
+	static long min() { return (long)0x80000000L; }
+	static long max() { return 2147483647L; }
+	static long lowest() { return (long)0x80000000L; }
+};
+
+template<> struct numeric_limits<unsigned long> {
+	static const bool is_specialized = true;
+	static const int digits = 32;
+	static const bool is_signed = false;
+	static const bool is_integer = true;
+	static const bool is_exact = true;
+	static unsigned long min() { return 0; }
+	static unsigned long max() { return 4294967295ul; }
+	static unsigned long lowest() { return 0; }
+};
+
+template<> struct numeric_limits<long long> {
+	static const bool is_specialized = true;
+	static const int digits = 63;
+	static const bool is_signed = true;
+	static const bool is_integer = true;
+	static const bool is_exact = true;
+	static long long min() { return (long long)0x8000000000000000LL; }
+	static long long max() { return 9223372036854775807LL; }
+	static long long lowest() { return (long long)0x8000000000000000LL; }
+};
+
+template<> struct numeric_limits<unsigned long long> {
+	static const bool is_specialized = true;
+	static const int digits = 64;
+	static const bool is_signed = false;
+	static const bool is_integer = true;
+	static const bool is_exact = true;
+	static unsigned long long min() { return 0; }
+	static unsigned long long max() { return 18446744073709551615ull; }
+	static unsigned long long lowest() { return 0; }
+};
+
+template<> struct numeric_limits<float> {
+	static const bool is_specialized = true;
+	static const int digits = 24;
+	static const bool is_signed = true;
+	static const bool is_integer = false;
+	static const bool is_exact = false;
+	static const int max_digits10 = 9;
+	static float min() { return 1.17549435e-38f; }
+	static float max() { return 3.40282347e+38f; }
+	static float lowest() { return -3.40282347e+38f; }
+	static float epsilon() { return 1.19209290e-07f; }
+	static bool has_infinity() { return true; }
+	static bool has_quiet_NaN() { return true; }
+};
+
+template<> struct numeric_limits<double> {
+	static const bool is_specialized = true;
+	static const int digits = 53;
+	static const bool is_signed = true;
+	static const bool is_integer = false;
+	static const bool is_exact = false;
+	static const int max_digits10 = 17;
+	static double min() { return 2.2250738585072014e-308; }
+	static double max() { return 1.7976931348623157e+308; }
+	static double lowest() { return -1.7976931348623157e+308; }
+	static double epsilon() { return 2.2204460492503131e-16; }
+	static bool has_infinity() { return true; }
+	static bool has_quiet_NaN() { return true; }
+};
+
+}  /* namespace std */
+
+#endif

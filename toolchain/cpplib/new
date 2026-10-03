@@ -1,0 +1,43 @@
+#ifndef PRIZM_CPPSHIM_NEW
+#define PRIZM_CPPSHIM_NEW
+
+/* <new>.  Placement new itself is defined in __stl_bits so that every
+   container can reach it without including this header.
+ *
+ * There are no exceptions on this target, so operator new cannot report
+ * failure by throwing and bad_alloc is never actually thrown.  The types exist
+ * because programs name them, and the nothrow overloads are real: they return
+ * a null pointer, which is the behaviour a no-exceptions build should have.
+ */
+#include <__stl_bits>
+
+namespace std {
+
+struct nothrow_t {
+	explicit nothrow_t() {}
+};
+extern const nothrow_t nothrow;
+
+typedef void (*new_handler)();
+
+inline new_handler set_new_handler(new_handler) { return 0; }
+inline new_handler get_new_handler() { return 0; }
+
+class bad_alloc {
+public:
+	const char* what() const { return "bad_alloc"; }
+};
+
+class bad_array_new_length : public bad_alloc {};
+
+}  /* namespace std */
+
+/* The nothrow forms live at global scope, as the standard requires.  They go
+   straight to malloc, which is what the plain operator new in prizm_support.cpp
+   does through sys_malloc as well. */
+inline void* operator new(size_t n, const std::nothrow_t&) { return malloc(n); }
+inline void* operator new[](size_t n, const std::nothrow_t&) { return malloc(n); }
+inline void operator delete(void* p, const std::nothrow_t&) { free(p); }
+inline void operator delete[](void* p, const std::nothrow_t&) { free(p); }
+
+#endif

@@ -1,0 +1,25 @@
+#ifndef PRIZM_HOSTFAKE_STRING
+#define PRIZM_HOSTFAKE_STRING
+
+/* Host stand-in for <string>.
+ *
+ * The PC test harness compiles prizm_console.cpp (and host_main.cpp) with the
+ * real MinGW g++, so the system <string> would be picked up.  The real header
+ * pulls in the real <istream> / <ostream> class templates, which then collide
+ * with the flat istream / ostream classes the console shim defines.
+ *
+ * Putting the toolchain\cpplib directory on the -I path is not an option
+ * either: cpplib\cstdlib and cpplib\cmath are meant to shadow the SDK headers
+ * on the calculator, and on the host they would just as happily shadow MinGW's
+ * own <cstdlib> / <cmath>, breaking the C++ standard library that g++ itself
+ * needs.
+ *
+ * So the harness gets this one file, and it simply re-exports the target
+ * string.  That header is self contained - it only needs plain C headers
+ * (<stddef.h>, <stdlib.h>, <string.h>) - so it compiles unchanged on the host.
+ * This directory is first on the include path (see run-test.bat), which is why
+ * "#include <string>" inside cppshim\iostream lands here.
+ */
+#include "../../../toolchain/cpplib/string"
+
+#endif

@@ -1,0 +1,15 @@
+#ifndef PRIZM_CPPSHIM_CASSERT
+#define PRIZM_CPPSHIM_CASSERT
+
+/* assert() only has to survive as far as the compiler: the SDK has no assert.h
+   and an add-in has nowhere sensible to report a failed assertion, so with
+   NDEBUG defined it compiles away.  Without NDEBUG it still has to do
+   something visible, so it clears the screen and says what went wrong. */
+#ifdef NDEBUG
+#define assert(expr) ((void)0)
+#else
+extern "C" void prizm_assert_fail(const char* expr, const char* file, int line);
+#define assert(expr) ((expr) ? (void)0 : prizm_assert_fail(#expr, __FILE__, __LINE__))
+#endif
+
+#endif

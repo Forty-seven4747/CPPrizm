@@ -1,0 +1,53 @@
+#ifndef PRIZM_CPPSHIM_CMATH
+#define PRIZM_CPPSHIM_CMATH
+
+#include <math.h>
+
+/* math.h declares the core set, but there is no libm on the Prizm, so the
+   remaining routines are declared here and implemented in prizm_rt.cpp
+   together with the ones the SDK header already lists. */
+extern "C" {
+double ceil(double x);
+double sqrt(double x);
+double trunc(double x);
+double round(double x);
+double log10(double x);
+double tan(double x);
+double asin(double x);
+double acos(double x);
+double atan(double x);
+double sinh(double x);
+double cosh(double x);
+double tanh(double x);
+long   labs(long n);
+}
+
+namespace std {
+using ::floor;
+using ::ceil;
+using ::trunc;
+using ::round;
+using ::fabs;
+using ::fmod;
+using ::frexp;
+using ::ldexp;
+using ::modf;
+using ::sqrt;
+using ::pow;
+using ::exp;
+using ::log;
+using ::log10;
+using ::sin;
+using ::cos;
+using ::tan;
+using ::asin;
+using ::acos;
+using ::atan;
+using ::atan2;
+using ::sinh;
+using ::cosh;
+using ::tanh;
+using ::labs;
+}
+
+#endif

@@ -1,0 +1,263 @@
+#ifndef PRIZM_CPPSHIM_STRING
+#define PRIZM_CPPSHIM_STRING
+
+/* A std::string for the Prizm.
+ *
+ * There is no libstdc++ on the calculator, so this is a hand written stand in
+ * with the subset of the interface real console programs actually use.  It is
+ * heap backed, because the strings a program builds at run time (a line of
+ * 54 spaces, a growing word) are exactly the ones a fixed buffer would
+ * truncate.  malloc / realloc / free come from libc, which libfxcg backs with
+ * the system heap.
+ *
+ * Everything is inline so that no extra object file has to be linked, apart
+ * from the stream operators, which need ostream / istream and therefore live
+ * in the iostream shim and in prizm_rt.cpp.
+ */
+
+#include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
+/* Only on the calculator: on the PC the fake-header harness resolves
+   <string_view> to MinGW's libstdc++, whose std::ostream is a typedef and
+   clashes with the shim's forward declarations. */
+#if defined(__sh__)
+#include <string_view>
+#endif
+
+namespace std {
+
+class ostream;
+class istream;
+
+class string {
+public:
+	typedef size_t size_type;
+	static const size_type npos = (size_type)-1;
+
+	string() : m_p(0), m_n(0), m_cap(0) {}
+
+	string(const char* s) : m_p(0), m_n(0), m_cap(0) {
+		assign(s, s ? slen(s) : 0);
+	}
+	string(const char* s, size_type n) : m_p(0), m_n(0), m_cap(0) {
+		assign(s, n);
+	}
+	string(size_type n, char c) : m_p(0), m_n(0), m_cap(0) {
+		fill(n, c);
+	}
+	string(const string& o) : m_p(0), m_n(0), m_cap(0) {
+		assign(o.m_p, o.m_n);
+	}
+	~string() { if (m_p) free(m_p); }
+
+	string& operator=(const string& o) {
+		if (this != &o) assign(o.m_p, o.m_n);
+		return *this;
+	}
+	string& operator=(const char* s) {
+		assign(s, s ? slen(s) : 0);
+		return *this;
+	}
+	string& operator=(char c) { fill(1, c); return *this; }
+
+	/* ---- size and access ------------------------------------------- */
+
+	size_type size() const { return m_n; }
+	size_type length() const { return m_n; }
+	size_type capacity() const { return m_cap ? m_cap - 1 : 0; }
+	bool empty() const { return m_n == 0; }
+	const char* c_str() const { return m_p ? m_p : ""; }
+	const char* data() const { return c_str(); }
+
+	/* Implicit conversion to string_view, which is how a std::string is
+	   passed to something that takes "some text" without a copy.  No
+	   matching string_view -> string constructor exists, so this cannot
+	   create an ambiguity with the comparison operators below. */
+#if defined(__sh__)
+	operator string_view() const { return string_view(c_str(), m_n); }
+#endif
+
+	char& operator[](size_type i) {
+		if (i + 1 > m_n) {
+			if (!grow(i + 1)) { static char dummy = 0; dummy = 0; return dummy; }
+			for (size_type k = m_n; k < i; k++) m_p[k] = '\0';
+			m_n = i + 1;
+			m_p[m_n] = '\0';
+		}
+		return m_p[i];
+	}
+	char operator[](size_type i) const { return (i < m_n) ? m_p[i] : '\0'; }
+	char& at(size_type i) { return (*this)[i]; }
+	char at(size_type i) const { return (*this)[i]; }
+	char& front() { return (*this)[0]; }
+	char& back() { return (*this)[m_n ? m_n - 1 : 0]; }
+
+	/* ---- mutation -------------------------------------------------- */
+
+	void resize(size_type n) { resize(n, '\0'); }
+	void resize(size_type n, char c) {
+		if (n <= m_n) {
+			m_n = n;
+			if (m_p) m_p[m_n] = '\0';
+			return;
+		}
+		if (!grow(n)) return;
+		for (size_type i = m_n; i < n; i++) m_p[i] = c;
+		m_n = n;
+		m_p[m_n] = '\0';
+	}
+	void clear() { m_n = 0; if (m_p) m_p[0] = '\0'; }
+	void reserve(size_type n) { grow(n); }
+
+	void push_back(char c) {
+		if (!grow(m_n + 1)) return;
+		m_p[m_n++] = c;
+		m_p[m_n] = '\0';
+	}
+	void pop_back() { if (m_n) { m_n--; m_p[m_n] = '\0'; } }
+
+	string& append(const char* s, size_type n) {
+		if (!s) return *this;
+		size_type old = m_n;
+		if (!grow(m_n + n)) return *this;
+		for (size_type i = 0; i < n; i++) m_p[old + i] = s[i];
+		m_n = old + n;
+		m_p[m_n] = '\0';
+		return *this;
+	}
+	string& append(const char* s) { return append(s, s ? slen(s) : 0); }
+	string& append(const string& o) { return append(o.c_str(), o.m_n); }
+	string& operator+=(const string& o) { return append(o.c_str(), o.m_n); }
+	string& operator+=(const char* s) { return append(s); }
+	string& operator+=(char c) { push_back(c); return *this; }
+
+	string& erase(size_type pos, size_type n) {
+		if (pos > m_n) return *this;
+		size_type endp = pos + n;
+		if (endp > m_n) endp = m_n;
+		for (size_type i = endp; i <= m_n; i++) m_p[pos + (i - endp)] = m_p[i];
+		m_n -= (endp - pos);
+		return *this;
+	}
+
+	void swap(string& o) {
+		char* p = m_p; size_type n = m_n, c = m_cap;
+		m_p = o.m_p; m_n = o.m_n; m_cap = o.m_cap;
+		o.m_p = p; o.m_n = n; o.m_cap = c;
+	}
+
+	/* ---- search ---------------------------------------------------- */
+
+	size_type find(char c, size_type pos = 0) const {
+		for (size_type i = pos; i < m_n; i++) if (m_p[i] == c) return i;
+		return npos;
+	}
+	size_type find(const char* s, size_type pos = 0) const {
+		if (!s || !*s) return pos <= m_n ? pos : npos;
+		size_type ln = slen(s);
+		for (size_type i = pos; i + ln <= m_n; i++) {
+			size_type k = 0;
+			while (k < ln && m_p[i + k] == s[k]) k++;
+			if (k == ln) return i;
+		}
+		return npos;
+	}
+	size_type rfind(char c) const {
+		for (size_type i = m_n; i > 0; i--) if (m_p[i - 1] == c) return i - 1;
+		return npos;
+	}
+
+	string substr(size_type pos, size_type n) const {
+		if (pos > m_n) return string();
+		size_type len = m_n - pos;
+		if (n < len) len = n;
+		string r;
+		r.assign(m_p + pos, len);
+		return r;
+	}
+
+	/* ---- comparison ------------------------------------------------ */
+
+	int compare(const string& o) const { return cmp(m_p, m_n, o.m_p, o.m_n); }
+	int compare(const char* s) const { return cmp(m_p, m_n, s, s ? slen(s) : 0); }
+
+	friend bool operator==(const string& a, const string& b) { return a.compare(b) == 0; }
+	friend bool operator!=(const string& a, const string& b) { return a.compare(b) != 0; }
+	friend bool operator< (const string& a, const string& b) { return a.compare(b) <  0; }
+	friend bool operator> (const string& a, const string& b) { return a.compare(b) >  0; }
+	friend bool operator<=(const string& a, const string& b) { return a.compare(b) <= 0; }
+	friend bool operator>=(const string& a, const string& b) { return a.compare(b) >= 0; }
+
+	friend bool operator==(const string& a, const char* b) { return a.compare(b) == 0; }
+	friend bool operator!=(const string& a, const char* b) { return a.compare(b) != 0; }
+	friend bool operator< (const string& a, const char* b) { return a.compare(b) <  0; }
+	friend bool operator> (const string& a, const char* b) { return a.compare(b) >  0; }
+	friend bool operator==(const char* a, const string& b) { return b.compare(a) == 0; }
+	friend bool operator!=(const char* a, const string& b) { return b.compare(a) != 0; }
+
+	friend string operator+(const string& a, const string& b) {
+		string r(a); r.append(b); return r;
+	}
+	friend string operator+(const string& a, const char* b) {
+		string r(a); r.append(b); return r;
+	}
+	friend string operator+(const char* a, const string& b) {
+		string r(a); r.append(b.c_str(), b.m_n); return r;
+	}
+	friend string operator+(const string& a, char c) {
+		string r(a); r.push_back(c); return r;
+	}
+
+private:
+	char*     m_p;
+	size_type m_n;
+	size_type m_cap;   /* bytes allocated, always room for the terminator */
+
+	static size_type slen(const char* s) {
+		size_type n = 0;
+		while (s[n]) n++;
+		return n;
+	}
+
+	/* Make sure the buffer can hold need characters plus a terminator. */
+	bool grow(size_type need) {
+		if (m_cap >= need + 1) return true;
+		size_type nc = m_cap ? m_cap : 16;
+		while (nc < need + 1) nc *= 2;
+		char* np = (char*)realloc(m_p, nc);
+		if (!np) return false;
+		m_p = np;
+		m_cap = nc;
+		return true;
+	}
+
+	void assign(const char* s, size_type n) {
+		if (!s) n = 0;
+		if (!grow(n)) return;
+		for (size_type i = 0; i < n; i++) m_p[i] = s[i];
+		m_n = n;
+		m_p[m_n] = '\0';
+	}
+
+	void fill(size_type n, char c) {
+		if (!grow(n)) return;
+		for (size_type i = 0; i < n; i++) m_p[i] = c;
+		m_n = n;
+		m_p[m_n] = '\0';
+	}
+
+	static int cmp(const char* a, size_type an, const char* b, size_type bn) {
+		size_type n = an < bn ? an : bn;
+		for (size_type i = 0; i < n; i++) {
+			unsigned char ca = (unsigned char)a[i], cb = (unsigned char)b[i];
+			if (ca != cb) return ca < cb ? -1 : 1;
+		}
+		if (an == bn) return 0;
+		return an < bn ? -1 : 1;
+	}
+};
+
+}
+
+#endif

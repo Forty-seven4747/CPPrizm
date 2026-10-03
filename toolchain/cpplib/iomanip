@@ -1,0 +1,46 @@
+#ifndef PRIZM_CPPLIB_IOMANIP
+#define PRIZM_CPPLIB_IOMANIP
+
+/* Parameterized manipulators, implemented as small functors recognized by
+   inline operator overloads (the standard leaves the type unspecified). */
+
+#include <iostream>
+
+namespace std {
+
+struct __setw_t   { int n; };
+struct __setfill_t { char c; };
+struct __setprecision_t { int p; };
+struct __setbase_t { int b; };
+struct __setiosflags_t  { int f; };
+struct __resetiosflags_t { int f; };
+
+inline __setw_t setw(int n) { __setw_t r; r.n = n; return r; }
+inline __setfill_t setfill(char c) { __setfill_t r; r.c = c; return r; }
+inline __setprecision_t setprecision(int p) { __setprecision_t r; r.p = p; return r; }
+
+/* base 0 keeps the current basefield, 8/10/16 select it. */
+inline __setbase_t setbase(int b) { __setbase_t r; r.b = b; return r; }
+
+inline __setiosflags_t setiosflags(int f) { __setiosflags_t r; r.f = f; return r; }
+inline __resetiosflags_t resetiosflags(int f) { __resetiosflags_t r; r.f = f; return r; }
+
+inline ostream& operator<<(ostream& os, __setw_t m)         { os.width(m.n); return os; }
+inline ostream& operator<<(ostream& os, __setfill_t m)      { os.fill(m.c); return os; }
+inline ostream& operator<<(ostream& os, __setprecision_t m) { os.precision(m.p); return os; }
+inline ostream& operator<<(ostream& os, __setbase_t m) {
+	if (m.b == 8)  os.setf(__ios_oct, __ios_basefield);
+	else if (m.b == 16) os.setf(__ios_hex, __ios_basefield);
+	else if (m.b == 10) os.setf(__ios_dec, __ios_basefield);
+	return os;
+}
+inline ostream& operator<<(ostream& os, __setiosflags_t m)   { os.setf(m.f); return os; }
+inline ostream& operator<<(ostream& os, __resetiosflags_t m) { os.unsetf(m.f); return os; }
+
+inline istream& operator>>(istream& is, __setw_t m) { is.width(m.n); return is; }
+inline istream& operator>>(istream& is, __setiosflags_t m)   { is.setf(m.f, m.f); return is; }
+inline istream& operator>>(istream& is, __resetiosflags_t m) { is.flags(is.flags() & ~m.f); return is; }
+
+}
+
+#endif

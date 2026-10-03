@@ -1,0 +1,154 @@
+#ifndef PRIZM_CPPSHIM_ARRAY
+#define PRIZM_CPPSHIM_ARRAY
+
+/* <array> - a fixed size array that knows its own length.
+ *
+ * The standard says std::array is an aggregate with a single public member
+ * `T elems[N]`, and it is; on the calculator that matters less than it does on
+ * a PC, but keeping the layout means a struct that embeds a std::array can
+ * still be copied with memcpy, and `for (auto& x : a)` goes through the
+ * compiler's own array handling.
+ */
+
+#include <__stl_bits>
+
+namespace std {
+
+template<class T, size_t N>
+struct array {
+	typedef T              value_type;
+	typedef size_t         size_type;
+	typedef ptrdiff_t      difference_type;
+	typedef T&             reference;
+	typedef const T&       const_reference;
+	typedef T*             pointer;
+	typedef const T*       const_pointer;
+	typedef T*             iterator;
+	typedef const T*       const_iterator;
+	typedef std::reverse_iterator<iterator>       reverse_iterator;
+	typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
+
+	T elems[N ? N : 1];
+
+	/* ---- element access -------------------------------------------- */
+
+	T&       operator[](size_type i)       { return elems[i]; }
+	const T& operator[](size_type i) const { return elems[i]; }
+
+	T&       at(size_type i) {
+		if (i >= N) { __stl_fail("std::array::at out of range"); return elems[0]; }
+		return elems[i];
+	}
+	const T& at(size_type i) const {
+		if (i >= N) { __stl_fail("std::array::at out of range"); return elems[0]; }
+		return elems[i];
+	}
+
+	T&       front()       { return elems[0]; }
+	const T& front() const { return elems[0]; }
+	T&       back()        { return elems[N ? N - 1 : 0]; }
+	const T& back() const  { return elems[N ? N - 1 : 0]; }
+	T*       data()        { return elems; }
+	const T* data() const  { return elems; }
+
+	/* ---- iteration -------------------------------------------------- */
+
+	iterator      begin()        { return elems; }
+	iterator      end()          { return elems + N; }
+	const_iterator begin()  const { return elems; }
+	const_iterator end()    const { return elems + N; }
+	const_iterator cbegin() const { return elems; }
+	const_iterator cend()   const { return elems + N; }
+
+	reverse_iterator       rbegin()        { return reverse_iterator(end()); }
+	reverse_iterator       rend()          { return reverse_iterator(begin()); }
+	const_reverse_iterator rbegin()  const { return const_reverse_iterator(end()); }
+	const_reverse_iterator rend()    const { return const_reverse_iterator(begin()); }
+
+	/* ---- size ------------------------------------------------------- */
+
+	constexpr size_type size()     const { return N; }
+	constexpr size_type max_size() const { return N; }
+	constexpr bool      empty()    const { return N == 0; }
+
+	/* ---- modifiers -------------------------------------------------- */
+
+	void fill(const T& v) { for (size_type i = 0; i < N; i++) elems[i] = v; }
+
+	void swap(array& o) {
+		for (size_type i = 0; i < N; i++) {
+			T t = static_cast<T&&>(elems[i]);
+			elems[i] = static_cast<T&&>(o.elems[i]);
+			o.elems[i] = static_cast<T&&>(t);
+		}
+	}
+};
+
+/* ---- comparisons (lexicographic, like real std::array) ---------------- */
+
+#define PRIZM_ARRAY_CMP(op)                                                  \
+template<class T, size_t N>                                                  \
+inline bool operator op (const array<T, N>& a, const array<T, N>& b) {       \
+	for (size_t i = 0; i < N; i++) {                                         \
+		if (a.elems[i] op b.elems[i]) return true;                           \
+		if (b.elems[i] op a.elems[i]) return false;                          \
+	}                                                                        \
+	return false;                                                            \
+}
+
+PRIZM_ARRAY_CMP(<)
+PRIZM_ARRAY_CMP(>)
+#undef PRIZM_ARRAY_CMP
+
+template<class T, size_t N>
+inline bool operator==(const array<T, N>& a, const array<T, N>& b) {
+	for (size_t i = 0; i < N; i++)
+		if (!(a.elems[i] == b.elems[i])) return false;
+	return true;
+}
+template<class T, size_t N>
+inline bool operator!=(const array<T, N>& a, const array<T, N>& b) { return !(a == b); }
+template<class T, size_t N>
+inline bool operator<=(const array<T, N>& a, const array<T, N>& b) { return !(b < a); }
+template<class T, size_t N>
+inline bool operator>=(const array<T, N>& a, const array<T, N>& b) { return !(a < b); }
+
+template<class T, size_t N>
+inline void swap(array<T, N>& a, array<T, N>& b) { a.swap(b); }
+
+/* ---- get<I> ----------------------------------------------------------- */
+
+template<size_t I, class T, size_t N>
+inline T& get(array<T, N>& a) { return a.elems[I]; }
+template<size_t I, class T, size_t N>
+inline const T& get(const array<T, N>& a) { return a.elems[I]; }
+template<size_t I, class T, size_t N>
+inline T&& get(array<T, N>&& a) {
+	return static_cast<T&&>(get<I>(static_cast<array<T, N>&>(a)));
+}
+template<size_t I, class T, size_t N>
+inline const T&& get(const array<T, N>&& a) {
+	return static_cast<const T&&>(get<I>(static_cast<const array<T, N>&>(a)));
+}
+
+/* ---- tuple_size / tuple_element so structured bindings work ---------- */
+
+template<class T, size_t N> struct tuple_size<array<T, N> > {
+	static const size_t value = N;
+};
+template<size_t I, class T, size_t N> struct tuple_element<I, array<T, N> > {
+	typedef T type;
+};
+
+/* ---- to_array --------------------------------------------------------- */
+
+template<class T, size_t N>
+inline array<T, N> to_array(const T (&src)[N]) {
+	array<T, N> r;
+	for (size_t i = 0; i < N; i++) r.elems[i] = src[i];
+	return r;
+}
+
+}  /* namespace std */
+
+#endif

@@ -1,0 +1,35 @@
+#ifndef PRIZM_CPPSHIM_CSTDDEF
+#define PRIZM_CPPSHIM_CSTDDEF
+
+/* The SDK ships a freestanding stddef.h: size_t and NULL and nothing else.
+   The rest of what <cstddef> owes the standard is filled in here.
+
+   ptrdiff_t and nullptr_t come from the compiler rather than from a header, so
+   they cannot be shadowed and cannot disagree with the target's word size.
+   __stl_bits uses the same spelling for ptrdiff_t, and redeclaring a typedef
+   with the same type is legal in C++. */
+#include <stddef.h>
+
+#undef offsetof
+#define offsetof(T, m) __builtin_offsetof(T, m)
+
+namespace std {
+
+using ::size_t;
+
+typedef __PTRDIFF_TYPE__       ptrdiff_t;
+typedef decltype(nullptr)      nullptr_t;
+
+/* The most aligned type on the target, used by allocators and by any code that
+   wants a scratch buffer with the strictest alignment.  On sh3eb there is no
+   vector unit and no long double, so a double is already the widest. */
+typedef struct { long long __ll; double __d; void* __p; } max_align_t;
+
+}  /* namespace std */
+
+/* The C names too, because <stddef.h> on this SDK does not carry them. */
+#ifndef __cplusplus
+typedef __PTRDIFF_TYPE__ ptrdiff_t;
+#endif
+
+#endif

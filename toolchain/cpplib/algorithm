@@ -1,0 +1,1199 @@
+#ifndef PRIZM_CPPSHIM_ALGORITHM
+#define PRIZM_CPPSHIM_ALGORITHM
+
+/* <algorithm>.
+ *
+ * The full spread of the standard's free functions, minus the ones that
+ * cannot mean anything here.  Sorting is a median-of-three quicksort with an
+ * insertion sort below 16 elements and a heapsort fallback when the recursion
+ * runs too deep, which is the usual introsort and gives the O(n log n) worst
+ * case the standard promises without needing a second buffer.  stable_sort
+ * merges into a temporary block the same size as the input.
+ *
+ * Comparisons go through operator< only, as the standard specifies, unless an
+ * explicit comparator is passed.  Nothing here throws: an invalid range is a
+ * caller bug and an allocation failure in stable_sort reports through
+ * prizm_stl_fatal.
+ */
+
+#include <__stl_bits>
+#include <type_traits>
+#include <initializer_list>
+#include <cstddef>
+
+namespace std {
+
+/* Forward declarations for the handful of functions that are used before
+   their definition appears.  A call with iterators over a fundamental type
+   gets nothing from argument dependent lookup, so the name has to be visible
+   at the point the calling template is parsed, not merely at the point of
+   instantiation. */
+template<class It1, class It2> It1 search(It1 first, It1 last, It2 s_first, It2 s_last);
+template<class It> It is_sorted_until(It first, It last);
+
+/* =====================================================================
+   non-modifying sequence operations
+   ===================================================================== */
+
+template<class It, class Pred>
+inline bool all_of(It first, It last, Pred p) {
+	for (; first != last; ++first) if (!p(*first)) return false;
+	return true;
+}
+template<class It, class Pred>
+inline bool any_of(It first, It last, Pred p) {
+	for (; first != last; ++first) if (p(*first)) return true;
+	return false;
+}
+template<class It, class Pred>
+inline bool none_of(It first, It last, Pred p) {
+	for (; first != last; ++first) if (p(*first)) return false;
+	return true;
+}
+
+template<class It, class F>
+inline F for_each(It first, It last, F f) {
+	for (; first != last; ++first) f(*first);
+	return f;
+}
+/* C++17 parallel-for-each shape: the plain path, but the name exists. */
+template<class It, class F>
+inline F for_each_n(It first, size_t n, F f) {
+	for (; n > 0; --n, ++first) f(*first);
+	return f;
+}
+
+template<class It, class T>
+inline typename iterator_traits<It>::difference_type
+count(It first, It last, const T& v) {
+	typename iterator_traits<It>::difference_type n = 0;
+	for (; first != last; ++first) if (*first == v) ++n;
+	return n;
+}
+template<class It, class Pred>
+inline typename iterator_traits<It>::difference_type
+count_if(It first, It last, Pred p) {
+	typename iterator_traits<It>::difference_type n = 0;
+	for (; first != last; ++first) if (p(*first)) ++n;
+	return n;
+}
+
+template<class It1, class It2>
+inline pair<It1, It2> mismatch(It1 a, It1 last, It2 b) {
+	while (a != last && *a == *b) { ++a; ++b; }
+	return pair<It1, It2>(a, b);
+}
+template<class It1, class It2, class Pred>
+inline pair<It1, It2> mismatch(It1 a, It1 last, It2 b, Pred p) {
+	while (a != last && p(*a, *b)) { ++a; ++b; }
+	return pair<It1, It2>(a, b);
+}
+
+template<class It1, class It2>
+inline bool equal(It1 a, It1 last, It2 b) {
+	for (; a != last; ++a, ++b) if (!(*a == *b)) return false;
+	return true;
+}
+template<class It1, class It2>
+inline bool equal(It1 a, It1 last, It2 b, It2 last2) {
+	if (last - a != last2 - b) return false;
+	return equal(a, last, b);
+}
+template<class It1, class It2, class Pred>
+inline bool equal(It1 a, It1 last, It2 b, Pred p) {
+	for (; a != last; ++a, ++b) if (!p(*a, *b)) return false;
+	return true;
+}
+
+template<class It, class T>
+inline It find(It first, It last, const T& v) {
+	for (; first != last; ++first) if (*first == v) break;
+	return first;
+}
+template<class It, class Pred>
+inline It find_if(It first, It last, Pred p) {
+	for (; first != last; ++first) if (p(*first)) break;
+	return first;
+}
+template<class It, class Pred>
+inline It find_if_not(It first, It last, Pred p) {
+	for (; first != last; ++first) if (!p(*first)) break;
+	return first;
+}
+
+/* find_end: the last occurrence of [s_first, s_last) in [first, last). */
+template<class It1, class It2>
+inline It1 find_end(It1 first, It1 last, It2 s_first, It2 s_last) {
+	if (s_first == s_last) return last;
+	It1 r = last;
+	for (;;) {
+		It1 m = search(first, last, s_first, s_last);
+		if (m == last) break;
+		r = m;
+		first = m;
+		++first;
+	}
+	return r;
+}
+template<class It1, class It2, class Pred>
+inline It1 find_end(It1 first, It1 last, It2 s_first, It2 s_last, Pred p) {
+	if (s_first == s_last) return last;
+	It1 r = last;
+	for (;;) {
+		It1 m = search(first, last, s_first, s_last, p);
+		if (m == last) break;
+		r = m;
+		first = m;
+		++first;
+	}
+	return r;
+}
+
+template<class It1, class It2>
+inline It1 find_first_of(It1 first, It1 last, It2 s_first, It2 s_last) {
+	for (; first != last; ++first)
+		for (It2 s = s_first; s != s_last; ++s)
+			if (*first == *s) return first;
+	return last;
+}
+template<class It1, class It2, class Pred>
+inline It1 find_first_of(It1 first, It1 last, It2 s_first, It2 s_last, Pred p) {
+	for (; first != last; ++first)
+		for (It2 s = s_first; s != s_last; ++s)
+			if (p(*first, *s)) return first;
+	return last;
+}
+
+template<class It>
+inline It adjacent_find(It first, It last) {
+	if (first == last) return last;
+	It n = first;
+	++n;
+	for (; n != last; ++n, ++first)
+		if (*first == *n) return first;
+	return last;
+}
+template<class It, class Pred>
+inline It adjacent_find(It first, It last, Pred p) {
+	if (first == last) return last;
+	It n = first;
+	++n;
+	for (; n != last; ++n, ++first)
+		if (p(*first, *n)) return first;
+	return last;
+}
+
+template<class It1, class It2>
+inline It1 search(It1 first, It1 last, It2 s_first, It2 s_last) {
+	for (; ; ++first) {
+		It1 it = first;
+		It2 s = s_first;
+		for (;;) {
+			if (s == s_last) return first;
+			if (it == last) return last;
+			if (!(*it == *s)) break;
+			++it; ++s;
+		}
+	}
+}
+template<class It1, class It2, class Pred>
+inline It1 search(It1 first, It1 last, It2 s_first, It2 s_last, Pred p) {
+	for (; ; ++first) {
+		It1 it = first;
+		It2 s = s_first;
+		for (;;) {
+			if (s == s_last) return first;
+			if (it == last) return last;
+			if (!p(*it, *s)) break;
+			++it; ++s;
+		}
+	}
+}
+
+template<class It, class Size, class T>
+inline It search_n(It first, It last, Size n, const T& v) {
+	for (; first != last; ++first) {
+		if (!(*first == v)) continue;
+		It start = first;
+		Size k = n;
+		It it = first;
+		for (;;) {
+			++it;
+			--k;
+			if (k == 0) return start;
+			if (it == last) return last;
+			if (!(*it == v)) { first = it; break; }
+		}
+	}
+	return last;
+}
+
+/* =====================================================================
+   modifying sequence operations
+   ===================================================================== */
+
+template<class In, class Out>
+inline Out copy(In first, In last, Out out) {
+	for (; first != last; ++first, ++out) *out = *first;
+	return out;
+}
+template<class In, class Out, class Pred>
+inline Out copy_if(In first, In last, Out out, Pred p) {
+	for (; first != last; ++first) if (p(*first)) { *out = *first; ++out; }
+	return out;
+}
+template<class In, class Size, class Out>
+inline Out copy_n(In first, Size n, Out out) {
+	for (; n > 0; --n, ++first, ++out) *out = *first;
+	return out;
+}
+template<class Bidir1, class Bidir2>
+inline Bidir2 copy_backward(Bidir1 first, Bidir1 last, Bidir2 out) {
+	while (first != last) *--out = *--last;
+	return out;
+}
+
+template<class In, class Out>
+inline Out move(In first, In last, Out out) {
+	for (; first != last; ++first, ++out) *out = static_cast<typename iterator_traits<In>::value_type&&>(*first);
+	return out;
+}
+template<class Bidir1, class Bidir2>
+inline Bidir2 move_backward(Bidir1 first, Bidir1 last, Bidir2 out) {
+	while (first != last) *--out = static_cast<typename iterator_traits<Bidir1>::value_type&&>(*--last);
+	return out;
+}
+
+template<class It, class T>
+inline void fill(It first, It last, const T& v) {
+	for (; first != last; ++first) *first = v;
+}
+template<class Out, class Size, class T>
+inline Out fill_n(Out first, Size n, const T& v) {
+	for (; n > 0; --n, ++first) *first = v;
+	return first;
+}
+
+template<class In, class Out, class Op>
+inline Out transform(In first, In last, Out out, Op op) {
+	for (; first != last; ++first, ++out) *out = op(*first);
+	return out;
+}
+template<class It1, class It2, class Out, class Op>
+inline Out transform(It1 first1, It1 last1, It2 first2, Out out, Op op) {
+	for (; first1 != last1; ++first1, ++first2, ++out) *out = op(*first1, *first2);
+	return out;
+}
+
+template<class Fwd, class G>
+inline void generate(Fwd first, Fwd last, G g) {
+	for (; first != last; ++first) *first = g();
+}
+template<class Out, class Size, class G>
+inline Out generate_n(Out first, Size n, G g) {
+	for (; n > 0; --n, ++first) *first = g();
+	return first;
+}
+
+/* remove does not shrink anything - it shifts the kept elements forward and
+   returns the new logical end, which the caller then erases. */
+template<class Fwd, class T>
+inline Fwd remove(Fwd first, Fwd last, const T& v) {
+	Fwd out = first;
+	for (; first != last; ++first) {
+		if (!(*first == v)) { *out = static_cast<typename iterator_traits<Fwd>::value_type&&>(*first); ++out; }
+	}
+	return out;
+}
+template<class Fwd, class Pred>
+inline Fwd remove_if(Fwd first, Fwd last, Pred p) {
+	Fwd out = first;
+	for (; first != last; ++first) {
+		if (!p(*first)) { *out = static_cast<typename iterator_traits<Fwd>::value_type&&>(*first); ++out; }
+	}
+	return out;
+}
+template<class In, class Out, class T>
+inline Out remove_copy(In first, In last, Out out, const T& v) {
+	for (; first != last; ++first) if (!(*first == v)) { *out = *first; ++out; }
+	return out;
+}
+template<class In, class Out, class Pred>
+inline Out remove_copy_if(In first, In last, Out out, Pred p) {
+	for (; first != last; ++first) if (!p(*first)) { *out = *first; ++out; }
+	return out;
+}
+
+template<class Fwd, class T>
+inline void replace(Fwd first, Fwd last, const T& old_v, const T& new_v) {
+	for (; first != last; ++first) if (*first == old_v) *first = new_v;
+}
+template<class Fwd, class Pred, class T>
+inline void replace_if(Fwd first, Fwd last, Pred p, const T& new_v) {
+	for (; first != last; ++first) if (p(*first)) *first = new_v;
+}
+template<class In, class Out, class T>
+inline Out replace_copy(In first, In last, Out out, const T& old_v, const T& new_v) {
+	for (; first != last; ++first, ++out) *out = (*first == old_v) ? new_v : *first;
+	return out;
+}
+template<class In, class Out, class Pred, class T>
+inline Out replace_copy_if(In first, In last, Out out, Pred p, const T& new_v) {
+	for (; first != last; ++first, ++out) *out = p(*first) ? new_v : *first;
+	return out;
+}
+
+template<class Fwd1, class Fwd2>
+inline Fwd2 swap_ranges(Fwd1 a, Fwd1 last, Fwd2 b) {
+	for (; a != last; ++a, ++b) std::swap(*a, *b);
+	return b;
+}
+template<class Fwd1, class Fwd2>
+inline void iter_swap(Fwd1 a, Fwd2 b) { std::swap(*a, *b); }
+
+template<class Bidir>
+inline void reverse(Bidir first, Bidir last) {
+	while (first != last && first != --last) std::swap(*first++, *last);
+}
+template<class Bidir, class Out>
+inline Out reverse_copy(Bidir first, Bidir last, Out out) {
+	while (first != last) { --last; *out = *last; ++out; }
+	return out;
+}
+
+template<class Fwd>
+inline Fwd rotate(Fwd first, Fwd mid, Fwd last) {
+	if (first == mid || mid == last) return last;
+	/* The three-reverse trick: reverse both halves, reverse the whole.  It
+	   moves every element exactly once and needs no scratch space. */
+	Fwd r = first;
+	std::reverse(first, mid);
+	std::reverse(mid, last);
+	while (first != mid && mid != last) std::swap(*first++, *mid++);
+	if (first == mid) { std::reverse(mid, last); r = mid; }
+	else { std::reverse(first, mid); r = first; }
+	return r + (last - mid);
+}
+template<class Fwd, class Out>
+inline Out rotate_copy(Fwd first, Fwd mid, Fwd last, Out out) {
+	out = std::copy(mid, last, out);
+	return std::copy(first, mid, out);
+}
+
+template<class Fwd>
+inline Fwd unique(Fwd first, Fwd last) {
+	if (first == last) return last;
+	Fwd out = first;
+	++first;
+	for (; first != last; ++first)
+		if (!(*out == *first)) { ++out; *out = static_cast<typename iterator_traits<Fwd>::value_type&&>(*first); }
+	return ++out;
+}
+template<class Fwd, class Pred>
+inline Fwd unique(Fwd first, Fwd last, Pred p) {
+	if (first == last) return last;
+	Fwd out = first;
+	++first;
+	for (; first != last; ++first)
+		if (!p(*out, *first)) { ++out; *out = static_cast<typename iterator_traits<Fwd>::value_type&&>(*first); }
+	return ++out;
+}
+template<class In, class Out>
+inline Out unique_copy(In first, In last, Out out) {
+	if (first == last) return out;
+	typename iterator_traits<In>::value_type prev = *first;
+	*out = prev;
+	++out;
+	for (++first; first != last; ++first) {
+		if (!(*first == prev)) { prev = *first; *out = prev; ++out; }
+	}
+	return out;
+}
+template<class In, class Out, class Pred>
+inline Out unique_copy(In first, In last, Out out, Pred p) {
+	if (first == last) return out;
+	typename iterator_traits<In>::value_type prev = *first;
+	*out = prev;
+	++out;
+	for (++first; first != last; ++first) {
+		if (!p(*first, prev)) { prev = *first; *out = prev; ++out; }
+	}
+	return out;
+}
+
+/* =====================================================================
+   partition
+   ===================================================================== */
+
+template<class It, class Pred>
+inline bool is_partitioned(It first, It last, Pred p) {
+	for (; first != last && p(*first); ++first) {}
+	for (; first != last; ++first) if (p(*first)) return false;
+	return true;
+}
+
+template<class Bidir, class Pred>
+inline Bidir partition(Bidir first, Bidir last, Pred p) {
+	/* Hoare style: two pointers closing in, swapping out-of-place pairs.
+	   It is not stable, which is what the standard says for partition. */
+	while (first != last) {
+		while (first != last && p(*first)) ++first;
+		if (first == last) break;
+		do { --last; } while (first != last && !p(*last));
+		if (first != last) std::swap(*first, *last);
+	}
+	return first;
+}
+
+template<class In, class Out1, class Out2, class Pred>
+inline pair<Out1, Out2> partition_copy(In first, In last, Out1 t, Out2 f, Pred p) {
+	for (; first != last; ++first) {
+		if (p(*first)) { *t = *first; ++t; }
+		else           { *f = *first; ++f; }
+	}
+	return pair<Out1, Out2>(t, f);
+}
+
+template<class Fwd, class Pred>
+inline Fwd partition_point(Fwd first, Fwd last, Pred p) {
+	size_t n = (size_t)(last - first);
+	while (n > 0) {
+		size_t half = n / 2;
+		Fwd mid = first + half;
+		if (p(*mid)) { first = ++mid; n -= half + 1; }
+		else n = half;
+	}
+	return first;
+}
+
+/* =====================================================================
+   sorting
+   ===================================================================== */
+
+namespace __stl_algo {
+
+/* Insertion sort: quadratic but unbeatable on short ranges, and it is also
+   the finisher for the quicksort recursion. */
+template<class It, class Cmp>
+inline void __insertion_sort(It first, It last, Cmp cmp) {
+	if (first == last) return;
+	It i = first;
+	for (++i; i != last; ++i) {
+		typename iterator_traits<It>::value_type v = static_cast<typename iterator_traits<It>::value_type&&>(*i);
+		It j = i;
+		It jp = j;
+		--jp;
+		while (j != first && cmp(v, *jp)) {
+			*j = static_cast<typename iterator_traits<It>::value_type&&>(*jp);
+			j = jp;
+			--jp;
+		}
+		*j = static_cast<typename iterator_traits<It>::value_type&&>(v);
+	}
+}
+
+template<class It>
+inline void __insertion_sort(It first, It last) {
+	typedef typename iterator_traits<It>::value_type T;
+	__insertion_sort(first, last, less<T>());
+}
+
+template<class It, class Cmp>
+inline It __median3(It a, It b, It c, Cmp cmp) {
+	if (cmp(*a, *b)) {
+		if (cmp(*b, *c)) return b;
+		return cmp(*a, *c) ? c : a;
+	}
+	if (cmp(*a, *c)) return a;
+	return cmp(*b, *c) ? c : b;
+}
+
+/* Sift down for the heapsort fallback. */
+template<class It, class Cmp>
+inline void __sift_down(It first, size_t n, size_t i, Cmp cmp) {
+	for (;;) {
+		size_t l = 2 * i + 1;
+		size_t r = l + 1;
+		size_t big = i;
+		if (l < n && cmp(first[big], first[l])) big = l;
+		if (r < n && cmp(first[big], first[r])) big = r;
+		if (big == i) break;
+		std::swap(first[i], first[big]);
+		i = big;
+	}
+}
+
+template<class It, class Cmp>
+inline void __heap_sort(It first, It last, Cmp cmp) {
+	size_t n = (size_t)(last - first);
+	if (n < 2) return;
+	for (size_t i = n / 2; i-- > 0; ) __sift_down(first, n, i, cmp);
+	for (size_t e = n; e > 1; ) {
+		--e;
+		std::swap(first[0], first[e]);
+		__sift_down(first, e, 0, cmp);
+	}
+}
+
+/* Introsort: quicksort until the partition gets small, heapsort if it looks
+   pathological, insertion sort for the final pass. */
+template<class It, class Cmp>
+inline void __introsort(It first, It last, Cmp cmp, int depth) {
+	while ((size_t)(last - first) > 16) {
+		if (depth-- == 0) {
+			__heap_sort(first, last, cmp);
+			return;
+		}
+		It pivot = __median3(first, first + (last - first) / 2, last - 1, cmp);
+		typename iterator_traits<It>::value_type pv =
+		    static_cast<typename iterator_traits<It>::value_type&&>(*pivot);
+		It l = first, r = last;
+		for (;;) {
+			while (cmp(*l, pv)) ++l;
+			while (cmp(pv, *--r)) {}
+			if (l >= r) break;
+			std::swap(*l, *r);
+			++l;
+		}
+		It split = l;
+		/* Recurse into the smaller half, loop on the larger, which keeps the
+		   stack depth logarithmic. */
+		if ((size_t)(split - first) < (size_t)(last - split)) {
+			__introsort(first, split, cmp, depth);
+			first = split;
+		} else {
+			__introsort(split, last, cmp, depth);
+			last = split;
+		}
+	}
+	__insertion_sort(first, last, cmp);
+}
+
+template<class It, class Cmp>
+inline void __sort(It first, It last, Cmp cmp) {
+	if (first == last) return;
+	/* 2 * log2(n) is the usual depth budget for introsort. */
+	size_t n = (size_t)(last - first);
+	int depth = 0;
+	while ((size_t)(1 << depth) < n) ++depth;
+	__introsort(first, last, cmp, depth * 2);
+}
+
+}  /* namespace __stl_algo */
+
+template<class It>
+inline void sort(It first, It last) {
+	typedef typename iterator_traits<It>::value_type T;
+	__stl_algo::__sort(first, last, less<T>());
+}
+template<class It, class Cmp>
+inline void sort(It first, It last, Cmp cmp) {
+	__stl_algo::__sort(first, last, cmp);
+}
+
+/* stable_sort: bottom-up merge into a scratch buffer, so equal elements keep
+   their relative order by construction.  It is the same O(n log n) as sort
+   and costs one extra block of memory the size of the input. */
+template<class It, class Cmp>
+inline void stable_sort(It first, It last, Cmp cmp) {
+	size_t n = (size_t)(last - first);
+	if (n < 2) return;
+	typedef typename iterator_traits<It>::value_type T;
+	T* buf = (T*)__stl_alloc_bytes(n * sizeof(T));
+	if (!buf) { __stl_fail("std::stable_sort: out of memory"); return; }
+
+	T* src = buf;
+	T* dst = buf + n;
+	__stl_uninit_move_n(src, &*first, n);
+
+	T* from = src;
+	T* to = dst;
+	for (size_t width = 1; width < n; width *= 2) {
+		for (size_t lo = 0; lo < n; lo += width * 2) {
+			size_t mid = lo + width < n ? lo + width : n;
+			size_t hi = lo + width * 2 < n ? lo + width * 2 : n;
+			size_t i = lo, j = mid, k = lo;
+			while (i < mid && j < hi) {
+				/* <= so the left run wins ties, which is what makes the sort
+				   stable. */
+				if (!cmp(to[j], from[i])) to[k++] = static_cast<T&&>(from[i++]);
+				else                       to[k++] = static_cast<T&&>(from[j++]);
+			}
+			while (i < mid) to[k++] = static_cast<T&&>(from[i++]);
+			while (j < hi)  to[k++] = static_cast<T&&>(from[j++]);
+		}
+		T* t = from; from = to; to = t;
+	}
+	/* After an even number of passes the sorted data is back in `from`. */
+	if (from == src) {
+		__stl_move_block(&*first, src, n);
+		__stl_destroy_range(src, src + n);
+	} else {
+		/* Odd number of passes: `from` is buf + n and still holds scratch.
+		   The result is in buf. */
+		__stl_move_block(&*first, buf, n);
+		__stl_destroy_range(buf, buf + n);
+	}
+	__stl_free_bytes(src);
+}
+
+template<class It>
+inline void stable_sort(It first, It last) {
+	typedef typename iterator_traits<It>::value_type T;
+	stable_sort(first, last, less<T>());
+}
+
+template<class It>
+inline bool is_sorted(It first, It last) {
+	return is_sorted_until(first, last) == last;
+}
+template<class It, class Cmp>
+inline bool is_sorted(It first, It last, Cmp cmp) {
+	return is_sorted_until(first, last, cmp) == last;
+}
+
+template<class It>
+inline It is_sorted_until(It first, It last) {
+	typedef typename iterator_traits<It>::value_type T;
+	return is_sorted_until(first, last, less<T>());
+}
+template<class It, class Cmp>
+inline It is_sorted_until(It first, It last, Cmp cmp) {
+	if (first == last) return last;
+	It n = first;
+	++n;
+	while (n != last) {
+		if (cmp(*n, *first)) return n;
+		++first; ++n;
+	}
+	return last;
+}
+
+/* nth_element: after the call, *nth is the element that would be there if the
+   range were sorted, and everything before it compares no greater. */
+template<class It, class Cmp>
+inline void nth_element(It first, It nth, It last, Cmp cmp) {
+	if (nth == last || first == last) return;
+	while ((size_t)(last - first) > 16) {
+		It pivot = __stl_algo::__median3(first, first + (last - first) / 2, last - 1, cmp);
+		typename iterator_traits<It>::value_type pv =
+		    static_cast<typename iterator_traits<It>::value_type&&>(*pivot);
+		It l = first, r = last;
+		for (;;) {
+			while (cmp(*l, pv)) ++l;
+			while (cmp(pv, *--r)) {}
+			if (l >= r) break;
+			std::swap(*l, *r);
+			++l;
+		}
+		if (nth < l) last = l;
+		else if (nth >= l) first = l;
+		else return;
+	}
+	__stl_algo::__insertion_sort(first, last, cmp);
+}
+
+template<class It>
+inline void nth_element(It first, It nth, It last) {
+	typedef typename iterator_traits<It>::value_type T;
+	nth_element(first, nth, last, less<T>());
+}
+
+/* partial_sort: the smallest n elements, in order, at the front. */
+template<class It, class Cmp>
+inline void partial_sort(It first, It mid, It last, Cmp cmp) {
+	if (first == mid) return;
+	/* Build a max-heap of the first window, then feed the rest through it. */
+	__stl_algo::__heap_sort(first, mid, cmp);
+	for (It i = mid; i != last; ++i) {
+		if (cmp(*i, *first)) {
+			typename iterator_traits<It>::value_type v =
+			    static_cast<typename iterator_traits<It>::value_type&&>(*i);
+			*i = static_cast<typename iterator_traits<It>::value_type&&>(*first);
+			*first = static_cast<typename iterator_traits<It>::value_type&&>(v);
+			/* restore the heap property of the window */
+			size_t n = (size_t)(mid - first);
+			size_t pos = 0;
+			for (;;) {
+				size_t l = 2 * pos + 1, r = l + 1, big = pos;
+				if (l < n && cmp(first[big], first[l])) big = l;
+				if (r < n && cmp(first[big], first[r])) big = r;
+				if (big == pos) break;
+				std::swap(first[pos], first[big]);
+				pos = big;
+			}
+		}
+	}
+	std::sort(first, mid, cmp);
+}
+
+template<class It>
+inline void partial_sort(It first, It mid, It last) {
+	typedef typename iterator_traits<It>::value_type T;
+	partial_sort(first, mid, last, less<T>());
+}
+
+/* =====================================================================
+   binary search on sorted ranges
+   ===================================================================== */
+
+template<class Fwd, class T>
+inline Fwd lower_bound(Fwd first, Fwd last, const T& v) {
+	typedef typename iterator_traits<Fwd>::value_type V;
+	return lower_bound(first, last, v, less<V>());
+}
+template<class Fwd, class T, class Cmp>
+inline Fwd lower_bound(Fwd first, Fwd last, const T& v, Cmp cmp) {
+	size_t n = (size_t)(last - first);
+	while (n > 0) {
+		size_t half = n / 2;
+		Fwd mid = first + half;
+		if (cmp(*mid, v)) { first = ++mid; n -= half + 1; }
+		else n = half;
+	}
+	return first;
+}
+
+template<class Fwd, class T>
+inline Fwd upper_bound(Fwd first, Fwd last, const T& v) {
+	typedef typename iterator_traits<Fwd>::value_type V;
+	return upper_bound(first, last, v, less<V>());
+}
+template<class Fwd, class T, class Cmp>
+inline Fwd upper_bound(Fwd first, Fwd last, const T& v, Cmp cmp) {
+	size_t n = (size_t)(last - first);
+	while (n > 0) {
+		size_t half = n / 2;
+		Fwd mid = first + half;
+		if (!cmp(v, *mid)) { first = ++mid; n -= half + 1; }
+		else n = half;
+	}
+	return first;
+}
+
+template<class Fwd, class T>
+inline pair<Fwd, Fwd> equal_range(Fwd first, Fwd last, const T& v) {
+	return pair<Fwd, Fwd>(lower_bound(first, last, v), upper_bound(first, last, v));
+}
+template<class Fwd, class T, class Cmp>
+inline pair<Fwd, Fwd> equal_range(Fwd first, Fwd last, const T& v, Cmp cmp) {
+	return pair<Fwd, Fwd>(lower_bound(first, last, v, cmp), upper_bound(first, last, v, cmp));
+}
+
+template<class Fwd, class T>
+inline bool binary_search(Fwd first, Fwd last, const T& v) {
+	Fwd i = lower_bound(first, last, v);
+	return i != last && !(v < *i);
+}
+template<class Fwd, class T, class Cmp>
+inline bool binary_search(Fwd first, Fwd last, const T& v, Cmp cmp) {
+	Fwd i = lower_bound(first, last, v, cmp);
+	return i != last && !cmp(v, *i);
+}
+
+/* =====================================================================
+   merge and the set operations on sorted ranges
+   ===================================================================== */
+
+template<class In1, class In2, class Out, class Cmp>
+inline Out merge(In1 a, In1 alast, In2 b, In2 blast, Out out, Cmp cmp) {
+	for (;;) {
+		if (a == alast) return std::copy(b, blast, out);
+		if (b == blast) return std::copy(a, alast, out);
+		if (cmp(*b, *a)) { *out = *b; ++b; }
+		else             { *out = *a; ++a; }
+		++out;
+	}
+}
+template<class In1, class In2, class Out>
+inline Out merge(In1 a, In1 alast, In2 b, In2 blast, Out out) {
+	typedef typename iterator_traits<In1>::value_type T;
+	return merge(a, alast, b, blast, out, less<T>());
+}
+
+/* Merging in place.  Needs random access iterators - every container here
+   provides them - because the standard's bidirectional-only version is a
+   rotation dance that costs far more code than the buffer it saves. */
+template<class Bidir, class Cmp>
+inline void inplace_merge(Bidir first, Bidir mid, Bidir last, Cmp cmp) {
+	if (first == mid || mid == last) return;
+	size_t n = (size_t)(last - first);
+	size_t an = (size_t)(mid - first);
+	size_t bn = n - an;
+	typedef typename iterator_traits<Bidir>::value_type T;
+	T* buf = (T*)__stl_alloc_bytes(n * sizeof(T));
+	if (!buf) { __stl_fail("std::inplace_merge: out of memory"); return; }
+	__stl_uninit_copy_n(buf, &*first, n);
+	T* a = buf;
+	T* b = buf + an;
+	size_t k = 0, i = 0, j = 0;
+	while (i < an && j < bn) {
+		/* <= so the left run wins ties, which keeps the merge stable. */
+		if (!cmp(b[j], a[i])) first[k++] = static_cast<T&&>(a[i++]);
+		else                  first[k++] = static_cast<T&&>(b[j++]);
+	}
+	while (i < an) first[k++] = static_cast<T&&>(a[i++]);
+	while (j < bn) first[k++] = static_cast<T&&>(b[j++]);
+	__stl_destroy_range(buf, buf + n);
+	__stl_free_bytes(buf);
+}
+
+template<class Bidir>
+inline void inplace_merge(Bidir first, Bidir mid, Bidir last) {
+	typedef typename iterator_traits<Bidir>::value_type T;
+	inplace_merge(first, mid, last, less<T>());
+}
+
+template<class In1, class In2, class Cmp>
+inline bool includes(In1 a, In1 alast, In2 b, In2 blast, Cmp cmp) {
+	for (;;) {
+		if (b == blast) return true;
+		if (a == alast) return false;
+		if (cmp(*b, *a)) return false;
+		if (!cmp(*a, *b)) ++b;
+		++a;
+	}
+}
+template<class In1, class In2>
+inline bool includes(In1 a, In1 alast, In2 b, In2 blast) {
+	typedef typename iterator_traits<In1>::value_type T;
+	return includes(a, alast, b, blast, less<T>());
+}
+
+#define PRIZM_SET_OP(NAME, KEEP_A, KEEP_B, KEEP_BOTH)                        \
+template<class In1, class In2, class Out, class Cmp>                         \
+inline Out NAME(In1 a, In1 alast, In2 b, In2 blast, Out out, Cmp cmp) {      \
+	while (a != alast && b != blast) {                                       \
+		if (cmp(*a, *b))            { KEEP_A }                               \
+		else if (cmp(*b, *a))       { KEEP_B }                               \
+		else                        { KEEP_BOTH }                            \
+	}                                                                        \
+	return std::copy(a, alast, std::copy(b, blast, out));                    \
+}                                                                            \
+template<class In1, class In2, class Out>                                    \
+inline Out NAME(In1 a, In1 alast, In2 b, In2 blast, Out out) {               \
+	typedef typename iterator_traits<In1>::value_type T;                     \
+	return NAME(a, alast, b, blast, out, less<T>());                         \
+}
+
+/* union: keep everything from both. */
+PRIZM_SET_OP(set_union,
+             { *out = *a; ++out; ++a; },
+             { *out = *b; ++out; ++b; },
+             { *out = *a; ++out; ++a; ++b; })
+
+/* intersection: keep only what is in both. */
+PRIZM_SET_OP(set_intersection,
+             { ++a; },
+             { ++b; },
+             { *out = *a; ++out; ++a; ++b; })
+
+/* difference (a - b): keep what only a has. */
+PRIZM_SET_OP(set_difference,
+             { *out = *a; ++out; ++a; },
+             { ++b; },
+             { ++a; ++b; })
+
+/* symmetric difference: keep what exactly one of them has. */
+PRIZM_SET_OP(set_symmetric_difference,
+             { *out = *a; ++out; ++a; },
+             { *out = *b; ++out; ++b; },
+             { ++a; ++b; })
+
+#undef PRIZM_SET_OP
+
+/* =====================================================================
+   heap operations
+   ===================================================================== */
+
+template<class It, class Cmp>
+inline void push_heap(It first, It last, Cmp cmp) {
+	ptrdiff_t i = (last - first) - 1;
+	while (i > 0) {
+		ptrdiff_t parent = (i - 1) / 2;
+		if (!cmp(first[parent], first[i])) break;
+		std::swap(first[parent], first[i]);
+		i = parent;
+	}
+}
+template<class It>
+inline void push_heap(It first, It last) {
+	typedef typename iterator_traits<It>::value_type T;
+	push_heap(first, last, less<T>());
+}
+
+template<class It, class Cmp>
+inline void pop_heap(It first, It last, Cmp cmp) {
+	if (first == last) return;
+	--last;
+	if (first == last) return;
+	/* Move the top out of the way, then re-sift the hole. */
+	typename iterator_traits<It>::value_type v =
+	    static_cast<typename iterator_traits<It>::value_type&&>(*first);
+	*first = static_cast<typename iterator_traits<It>::value_type&&>(*last);
+	*last = static_cast<typename iterator_traits<It>::value_type&&>(v);
+	size_t n = (size_t)(last - first);
+	size_t pos = 0;
+	for (;;) {
+		size_t l = 2 * pos + 1, r = l + 1, big = pos;
+		if (l < n && cmp(first[big], first[l])) big = l;
+		if (r < n && cmp(first[big], first[r])) big = r;
+		if (big == pos) break;
+		std::swap(first[pos], first[big]);
+		pos = big;
+	}
+}
+template<class It>
+inline void pop_heap(It first, It last) {
+	typedef typename iterator_traits<It>::value_type T;
+	pop_heap(first, last, less<T>());
+}
+
+template<class It, class Cmp>
+inline void make_heap(It first, It last, Cmp cmp) {
+	size_t n = (size_t)(last - first);
+	if (n < 2) return;
+	for (size_t i = n / 2; i-- > 0; ) {
+		size_t pos = i;
+		for (;;) {
+			size_t l = 2 * pos + 1, r = l + 1, big = pos;
+			if (l < n && cmp(first[big], first[l])) big = l;
+			if (r < n && cmp(first[big], first[r])) big = r;
+			if (big == pos) break;
+			std::swap(first[pos], first[big]);
+			pos = big;
+		}
+	}
+}
+template<class It>
+inline void make_heap(It first, It last) {
+	typedef typename iterator_traits<It>::value_type T;
+	make_heap(first, last, less<T>());
+}
+
+template<class It, class Cmp>
+inline void sort_heap(It first, It last, Cmp cmp) {
+	while (first != last) {
+		pop_heap(first, last, cmp);
+		--last;
+	}
+}
+template<class It>
+inline void sort_heap(It first, It last) {
+	typedef typename iterator_traits<It>::value_type T;
+	sort_heap(first, last, less<T>());
+}
+
+template<class It, class Cmp>
+inline bool is_heap(It first, It last, Cmp cmp) {
+	size_t n = (size_t)(last - first);
+	for (size_t i = 1; i < n; i++)
+		if (cmp(first[(i - 1) / 2], first[i])) return false;
+	return true;
+}
+template<class It>
+inline bool is_heap(It first, It last) {
+	typedef typename iterator_traits<It>::value_type T;
+	return is_heap(first, last, less<T>());
+}
+
+template<class It, class Cmp>
+inline It is_heap_until(It first, It last, Cmp cmp) {
+	size_t n = (size_t)(last - first);
+	for (size_t i = 1; i < n; i++)
+		if (cmp(first[(i - 1) / 2], first[i])) return first + i;
+	return last;
+}
+template<class It>
+inline It is_heap_until(It first, It last) {
+	typedef typename iterator_traits<It>::value_type T;
+	return is_heap_until(first, last, less<T>());
+}
+
+/* =====================================================================
+   min, max, clamp
+   ===================================================================== */
+
+template<class T> inline const T& min(const T& a, const T& b) { return b < a ? b : a; }
+template<class T> inline const T& max(const T& a, const T& b) { return a < b ? b : a; }
+template<class T, class Cmp>
+inline const T& min(const T& a, const T& b, Cmp c) { return c(b, a) ? b : a; }
+template<class T, class Cmp>
+inline const T& max(const T& a, const T& b, Cmp c) { return c(a, b) ? b : a; }
+
+template<class T>
+inline T min(std::initializer_list<T> il) {
+	typename std::initializer_list<T>::const_iterator i = il.begin();
+	T r = *i++;
+	for (; i != il.end(); ++i) if (*i < r) r = *i;
+	return r;
+}
+template<class T>
+inline T max(std::initializer_list<T> il) {
+	typename std::initializer_list<T>::const_iterator i = il.begin();
+	T r = *i++;
+	for (; i != il.end(); ++i) if (r < *i) r = *i;
+	return r;
+}
+
+template<class T>
+inline pair<const T&, const T&> minmax(const T& a, const T& b) {
+	return b < a ? pair<const T&, const T&>(b, a) : pair<const T&, const T&>(a, b);
+}
+template<class T, class Cmp>
+inline pair<const T&, const T&> minmax(const T& a, const T& b, Cmp c) {
+	return c(b, a) ? pair<const T&, const T&>(b, a) : pair<const T&, const T&>(a, b);
+}
+
+template<class Fwd>
+inline Fwd min_element(Fwd first, Fwd last) {
+	typedef typename iterator_traits<Fwd>::value_type T;
+	return min_element(first, last, less<T>());
+}
+template<class Fwd, class Cmp>
+inline Fwd min_element(Fwd first, Fwd last, Cmp c) {
+	if (first == last) return last;
+	Fwd r = first;
+	for (++first; first != last; ++first) if (c(*first, *r)) r = first;
+	return r;
+}
+
+template<class Fwd>
+inline Fwd max_element(Fwd first, Fwd last) {
+	typedef typename iterator_traits<Fwd>::value_type T;
+	return max_element(first, last, less<T>());
+}
+template<class Fwd, class Cmp>
+inline Fwd max_element(Fwd first, Fwd last, Cmp c) {
+	if (first == last) return last;
+	Fwd r = first;
+	for (++first; first != last; ++first) if (c(*r, *first)) r = first;
+	return r;
+}
+
+template<class Fwd>
+inline pair<Fwd, Fwd> minmax_element(Fwd first, Fwd last) {
+	typedef typename iterator_traits<Fwd>::value_type T;
+	return minmax_element(first, last, less<T>());
+}
+template<class Fwd, class Cmp>
+inline pair<Fwd, Fwd> minmax_element(Fwd first, Fwd last, Cmp c) {
+	pair<Fwd, Fwd> r(first, first);
+	if (first == last) return r;
+	Fwd mn = first;
+	Fwd mx = first;
+	for (++first; first != last; ++first) {
+		if (c(*first, *mn)) mn = first;
+		if (!c(*first, *mx)) mx = first;
+	}
+	return pair<Fwd, Fwd>(mn, mx);
+}
+
+template<class T, class Cmp>
+inline const T& clamp(const T& v, const T& lo, const T& hi, Cmp c) {
+	return c(v, lo) ? lo : (c(hi, v) ? hi : v);
+}
+template<class T>
+inline const T& clamp(const T& v, const T& lo, const T& hi) {
+	return clamp(v, lo, hi, less<T>());
+}
+
+/* =====================================================================
+   lexicographical comparison and permutations
+   ===================================================================== */
+
+template<class In1, class In2>
+inline bool lexicographical_compare(In1 a, In1 alast, In2 b, In2 blast) {
+	for (;;) {
+		if (b == blast) return false;
+		if (a == alast) return true;
+		if (*a < *b) return true;
+		if (*b < *a) return false;
+		++a; ++b;
+	}
+}
+template<class In1, class In2, class Cmp>
+inline bool lexicographical_compare(In1 a, In1 alast, In2 b, In2 blast, Cmp c) {
+	for (;;) {
+		if (b == blast) return false;
+		if (a == alast) return true;
+		if (c(*a, *b)) return true;
+		if (c(*b, *a)) return false;
+		++a; ++b;
+	}
+}
+
+template<class It>
+inline bool is_permutation(It a, It alast, It b) {
+	for (; a != alast; ++a, ++b) {
+		if (*a == *b) continue;
+		/* *a differs from *b, so it must appear the same number of times in
+		   both ranges.  Anything already matched further back is skipped by
+		   counting against the tail. */
+		It scan = a;
+		++scan;
+		ptrdiff_t seen = 0;
+		for (; scan != alast; ++scan) if (*a == *scan) ++seen;
+		for (It s = b; s != alast; ++s) {
+			if (*a == *s) {
+				if (seen == 0) return false;
+				--seen;
+			}
+		}
+		if (seen != 0) return false;
+	}
+	return true;
+}
+
+template<class Bidir, class Cmp>
+inline bool next_permutation(Bidir first, Bidir last, Cmp c) {
+	if (first == last) return false;
+	Bidir i = last;
+	if (first == --i) return false;
+	for (;;) {
+		Bidir ii = i;
+		--i;
+		if (c(*i, *ii)) {
+			/* Find the rightmost element greater than *i, swap, reverse. */
+			Bidir j = last;
+			while (!c(*i, *--j)) {}
+			std::swap(*i, *j);
+			std::reverse(ii, last);
+			return true;
+		}
+		if (i == first) { std::reverse(first, last); return false; }
+	}
+}
+template<class Bidir>
+inline bool next_permutation(Bidir first, Bidir last) {
+	typedef typename iterator_traits<Bidir>::value_type T;
+	return next_permutation(first, last, less<T>());
+}
+
+template<class Bidir, class Cmp>
+inline bool prev_permutation(Bidir first, Bidir last, Cmp c) {
+	if (first == last) return false;
+	Bidir i = last;
+	if (first == --i) return false;
+	for (;;) {
+		Bidir ii = i;
+		--i;
+		if (c(*ii, *i)) {
+			Bidir j = last;
+			while (!c(*--j, *i)) {}
+			std::swap(*i, *j);
+			std::reverse(ii, last);
+			return true;
+		}
+		if (i == first) { std::reverse(first, last); return false; }
+	}
+}
+template<class Bidir>
+inline bool prev_permutation(Bidir first, Bidir last) {
+	typedef typename iterator_traits<Bidir>::value_type T;
+	return prev_permutation(first, last, less<T>());
+}
+
+}  /* namespace std */
+
+#endif

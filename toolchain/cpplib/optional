@@ -1,0 +1,231 @@
+#ifndef PRIZM_CPPSHIM_OPTIONAL
+#define PRIZM_CPPSHIM_OPTIONAL
+
+/* <optional>.
+ *
+ * A T with a "not there" flag.  The value lives inline in the optional - no
+ * allocation, one byte of state - which is the whole point of optional over a
+ * pointer: no new, no delete, and the storage moves with the object.
+ *
+ * Storage is alignas(T) unsigned char[sizeof(T)] with the flag beside it.  A
+ * union would also work but this spelling keeps sizeof(optional<T>) easy to
+ * reason about and lets the destructor switch on the flag without any
+ * placement gymnastics.
+ *
+ * value() on a null optional is a programming error.  There are no exceptions,
+ * so it goes to prizm_stl_fatal, which on the calculator prints the reason and
+ * waits for a key; the interpreter-style fallback return below is only there
+ * so the function compiles.
+ */
+
+#include <__stl_bits>
+#include <type_traits>
+#include <new>
+#include <cstddef>
+
+namespace std {
+
+/* ---- in_place / nullopt tags ------------------------------------------ */
+
+struct in_place_t {
+	explicit in_place_t() = default;
+};
+constexpr in_place_t in_place{};
+
+struct nullopt_t {
+	explicit constexpr nullopt_t(int) {}
+};
+constexpr nullopt_t nullopt{0};
+
+class bad_optional_access {};
+
+/* =====================================================================
+   optional
+   ===================================================================== */
+
+template<class T>
+class optional {
+public:
+	typedef T value_type;
+
+	constexpr optional() : m_has(false) {}
+	constexpr optional(nullopt_t) : m_has(false) {}
+
+	optional(const optional& o) : m_has(o.m_has) {
+		if (m_has) __stl_construct(ptr(), *o.ptr());
+	}
+	optional(optional&& o) : m_has(o.m_has) {
+		if (m_has) __stl_construct(ptr(), static_cast<T&&>(*o.ptr()));
+	}
+
+	template<class U = T, class = typename enable_if<
+	    !is_same<__decay_t<U>, optional>::value &&
+	    !is_same<__decay_t<U>, in_place_t>::value>::type>
+	optional(U&& v) : m_has(true) {
+		__stl_construct(ptr(), static_cast<U&&>(v));
+	}
+
+	template<class... Args>
+	explicit optional(in_place_t, Args&&... args) : m_has(true) {
+		__stl_construct(ptr(), static_cast<Args&&>(args)...);
+	}
+
+	~optional() { __teardown(); }
+
+	optional& operator=(nullopt_t) { __teardown(); return *this; }
+
+	optional& operator=(const optional& o) {
+		if (this != &o) {
+			if (o.m_has) __assign(*o.ptr());
+			else         __teardown();
+		}
+		return *this;
+	}
+	optional& operator=(optional&& o) {
+		if (this != &o) {
+			if (o.m_has) __assign(static_cast<T&&>(*o.ptr()));
+			else         __teardown();
+		}
+		return *this;
+	}
+
+	template<class U = T, class = typename enable_if<
+	    !is_same<__decay_t<U>, optional>::value>::type>
+	optional& operator=(U&& v) {
+		__assign(static_cast<U&&>(v));
+		return *this;
+	}
+
+	/* ---- observers --------------------------------------------------- */
+
+	constexpr bool has_value() const { return m_has; }
+	constexpr explicit operator bool() const { return m_has; }
+
+	T& value() {
+		if (!m_has) {
+			__stl_fail("std::optional::value: no value");
+			return *__stl_declval<T*>();
+		}
+		return *ptr();
+	}
+	const T& value() const {
+		if (!m_has) {
+			__stl_fail("std::optional::value: no value");
+			return *__stl_declval<T*>();
+		}
+		return *ptr();
+	}
+
+	T* operator->() {
+		if (!m_has) { __stl_fail("std::optional::operator->: no value"); return 0; }
+		return ptr();
+	}
+	const T* operator->() const {
+		if (!m_has) { __stl_fail("std::optional::operator->: no value"); return 0; }
+		return ptr();
+	}
+	/* operator* is unchecked, exactly as in the standard: it is only
+	   meaningful after has_value(), and returning a reference means there is
+	   nothing safe to hand back otherwise. */
+	T& operator*() & { return *ptr(); }
+	const T& operator*() const & { return *ptr(); }
+	T&& operator*() && { return static_cast<T&&>(*ptr()); }
+
+	template<class U>
+	T value_or(U&& v) const {
+		return m_has ? *ptr() : static_cast<T>(static_cast<U&&>(v));
+	}
+
+	/* ---- modifiers --------------------------------------------------- */
+
+	void reset() { __teardown(); }
+
+	template<class... Args>
+	T& emplace(Args&&... args) {
+		__teardown();
+		m_has = true;
+		__stl_construct(ptr(), static_cast<Args&&>(args)...);
+		return *ptr();
+	}
+
+	void swap(optional& o) {
+		if (m_has && o.m_has) {
+			std::swap(*ptr(), *o.ptr());
+		} else if (m_has && !o.m_has) {
+			__stl_construct(o.ptr(), static_cast<T&&>(*ptr()));
+			__teardown();
+			o.m_has = true;
+		} else if (!m_has && o.m_has) {
+			__stl_construct(ptr(), static_cast<T&&>(*o.ptr()));
+			o.__teardown();
+			m_has = true;
+		}
+		/* both empty: nothing to do */
+	}
+
+private:
+	alignas(T) unsigned char m_buf[sizeof(T)];
+	bool                     m_has;
+
+	T*       ptr()       { return reinterpret_cast<T*>(m_buf); }
+	const T* ptr() const { return reinterpret_cast<const T*>(m_buf); }
+
+	void __teardown() {
+		if (m_has) {
+			__stl_destroy(ptr());
+			m_has = false;
+		}
+	}
+	/* Move or copy a value in, tearing the old one down first. */
+	template<class U>
+	void __assign(U&& v) {
+		if (m_has) *ptr() = static_cast<U&&>(v);
+		else {
+			__stl_construct(ptr(), static_cast<U&&>(v));
+			m_has = true;
+		}
+	}
+};
+
+/* ---- comparisons ------------------------------------------------------ */
+
+template<class T> inline bool operator==(const optional<T>& a, const optional<T>& b) {
+	if (a.has_value() != b.has_value()) return false;
+	return !a.has_value() || (*a == *b);
+}
+template<class T> inline bool operator!=(const optional<T>& a, const optional<T>& b) { return !(a == b); }
+
+template<class T> inline bool operator<(const optional<T>& a, const optional<T>& b) {
+	if (!b.has_value()) return false;
+	if (!a.has_value()) return true;
+	return *a < *b;
+}
+template<class T> inline bool operator>(const optional<T>& a, const optional<T>& b) { return b < a; }
+template<class T> inline bool operator<=(const optional<T>& a, const optional<T>& b) { return !(b < a); }
+template<class T> inline bool operator>=(const optional<T>& a, const optional<T>& b) { return !(a < b); }
+
+/* Against nullopt: an empty optional compares equal to nullopt, and every
+   engaged optional sorts after it. */
+template<class T> inline bool operator==(const optional<T>& a, nullopt_t) { return !a.has_value(); }
+template<class T> inline bool operator==(nullopt_t, const optional<T>& a) { return !a.has_value(); }
+template<class T> inline bool operator!=(const optional<T>& a, nullopt_t) { return a.has_value(); }
+template<class T> inline bool operator!=(nullopt_t, const optional<T>& a) { return a.has_value(); }
+template<class T> inline bool operator<(const optional<T>&, nullopt_t) { return false; }
+template<class T> inline bool operator<(nullopt_t, const optional<T>& a) { return a.has_value(); }
+
+template<class T> inline void swap(optional<T>& a, optional<T>& b) { a.swap(b); }
+
+/* ---- make_optional ---------------------------------------------------- */
+
+template<class T>
+inline optional<__decay_t<T> > make_optional(T&& v) {
+	return optional<__decay_t<T> >(static_cast<T&&>(v));
+}
+template<class T, class... Args>
+inline optional<T> make_optional(Args&&... args) {
+	return optional<T>(in_place, static_cast<Args&&>(args)...);
+}
+
+}  /* namespace std */
+
+#endif

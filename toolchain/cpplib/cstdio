@@ -1,0 +1,55 @@
+#ifndef PRIZM_CPPSHIM_CSTDIO
+#define PRIZM_CPPSHIM_CSTDIO
+
+#include <stdio.h>
+#include <stdarg.h>
+
+/* printf / sprintf / puts / putchar are provided by the console, see
+   prizm_console.cpp.  The bounded ones are not in the SDK header, so they are
+   declared here and also implemented there. */
+extern "C" {
+int snprintf(char* dest, size_t n, const char* fmt, ...);
+int vsnprintf(char* dest, size_t n, const char* fmt, va_list ap);
+int vprintf(const char* fmt, va_list ap);
+int vfprintf(FILE* stream, const char* fmt, va_list ap);
+int vsprintf(char* dest, const char* fmt, va_list ap);
+int fputs(const char* s, FILE* stream);
+}
+
+namespace std {
+using ::size_t;
+using ::FILE;
+
+using ::printf;
+using ::sprintf;
+using ::snprintf;
+using ::fprintf;
+using ::vprintf;
+using ::vfprintf;
+using ::vsprintf;
+using ::vsnprintf;
+
+using ::puts;
+using ::putchar;
+using ::fputs;
+using ::fputc;
+using ::getchar;
+using ::fgetc;
+using ::fgets;
+
+using ::fopen;
+using ::fclose;
+using ::fread;
+using ::fwrite;
+using ::fflush;
+using ::feof;
+using ::ferror;
+using ::fseek;
+using ::ftell;
+
+/* stdin / stdout / stderr / EOF are macros in the SDK header, and a macro
+   cannot be pulled in with a using declaration.  They are already reachable
+   by their plain names, which is what every real program uses. */
+}
+
+#endif

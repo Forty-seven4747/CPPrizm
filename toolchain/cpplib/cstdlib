@@ -1,0 +1,44 @@
+#ifndef PRIZM_CPPSHIM_CSTDLIB
+#define PRIZM_CPPSHIM_CSTDLIB
+
+#include <stdlib.h>
+#include <stddef.h>
+
+/* stdlib.h defines atoi / atol / atof as object-like macros, and a macro can
+   neither be re-exported with a using declaration nor kept out of the way of
+   a function of the same name.  They are undefined and re-declared as real
+   functions, which also fixes the double evaluation the macros have.  The
+   global names are kept so that code calling bare atoi() still compiles. */
+#undef atoi
+#undef atol
+#undef atof
+
+inline int    atoi(const char* s) { return (int)strtol(s, 0, 10); }
+inline long   atol(const char* s) { return strtol(s, 0, 10); }
+inline double atof(const char* s) { return strtod(s, 0); }
+
+/* system() is not in the SDK header.  Only "cls" does anything on the Prizm;
+   anything else, "pause" included, is ignored and reports success. */
+extern "C" int system(const char* command);
+
+namespace std {
+using ::size_t;
+
+using ::rand;
+using ::srand;
+using ::abs;
+using ::malloc;
+using ::realloc;
+using ::free;
+using ::exit;
+using ::abort;
+using ::strtol;
+using ::strtod;
+using ::qsort;
+using ::system;
+using ::atoi;
+using ::atol;
+using ::atof;
+}
+
+#endif

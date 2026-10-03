@@ -1,0 +1,156 @@
+#ifndef PRIZM_CPPLIB_COMPLEX
+#define PRIZM_CPPLIB_COMPLEX
+
+#include <cmath>
+
+namespace std {
+
+template<class T>
+class complex {
+public:
+	complex(T re = T(), T im = T()) : m_re(re), m_im(im) {}
+	complex(const complex&) = default;
+	template<class X>
+	complex(const complex<X>& o) : m_re((T)o.real()), m_im((T)o.imag()) {}
+
+	T real() const { return m_re; }
+	T imag() const { return m_im; }
+	void real(T v) { m_re = v; }
+	void imag(T v) { m_im = v; }
+
+	complex& operator=(const T& v) { m_re = v; m_im = T(); return *this; }
+	complex& operator+=(const T& v) { m_re += v; return *this; }
+	complex& operator-=(const T& v) { m_re -= v; return *this; }
+	complex& operator*=(const T& v) { m_re *= v; m_im *= v; return *this; }
+	complex& operator/=(const T& v) { m_re /= v; m_im /= v; return *this; }
+
+	complex& operator+=(const complex& o) { m_re += o.m_re; m_im += o.m_im; return *this; }
+	complex& operator-=(const complex& o) { m_re -= o.m_re; m_im -= o.m_im; return *this; }
+	complex& operator*=(const complex& o) {
+		T r = m_re * o.m_re - m_im * o.m_im;
+		T i = m_re * o.m_im + m_im * o.m_re;
+		m_re = r; m_im = i;
+		return *this;
+	}
+	complex& operator/=(const complex& o) {
+		T d = o.m_re * o.m_re + o.m_im * o.m_im;
+		T r = (m_re * o.m_re + m_im * o.m_im) / d;
+		T i = (m_im * o.m_re - m_re * o.m_im) / d;
+		m_re = r; m_im = i;
+		return *this;
+	}
+
+private:
+	T m_re, m_im;
+};
+
+template<class T>
+complex<T> operator+(const complex<T>& a, const complex<T>& b) { complex<T> r(a); r += b; return r; }
+template<class T>
+complex<T> operator-(const complex<T>& a, const complex<T>& b) { complex<T> r(a); r -= b; return r; }
+template<class T>
+complex<T> operator*(const complex<T>& a, const complex<T>& b) { complex<T> r(a); r *= b; return r; }
+template<class T>
+complex<T> operator/(const complex<T>& a, const complex<T>& b) { complex<T> r(a); r /= b; return r; }
+template<class T>
+complex<T> operator+(const complex<T>& a, const T& v) { complex<T> r(a); r += v; return r; }
+template<class T>
+complex<T> operator+(const T& v, const complex<T>& a) { complex<T> r(a); r += v; return r; }
+template<class T>
+complex<T> operator-(const complex<T>& a, const T& v) { complex<T> r(a); r -= v; return r; }
+template<class T>
+complex<T> operator-(const T& v, const complex<T>& a) { return complex<T>(v - a.real(), -a.imag()); }
+template<class T>
+complex<T> operator*(const complex<T>& a, const T& v) { complex<T> r(a); r *= v; return r; }
+template<class T>
+complex<T> operator*(const T& v, const complex<T>& a) { complex<T> r(a); r *= v; return r; }
+template<class T>
+complex<T> operator/(const complex<T>& a, const T& v) { complex<T> r(a); r /= v; return r; }
+template<class T>
+complex<T> operator/(const T& v, const complex<T>& a) { return complex<T>(v) / a; }
+template<class T>
+complex<T> operator+(const complex<T>& a) { return a; }
+template<class T>
+complex<T> operator-(const complex<T>& a) { return complex<T>(-a.real(), -a.imag()); }
+
+template<class T>
+bool operator==(const complex<T>& a, const complex<T>& b) { return a.real() == b.real() && a.imag() == b.imag(); }
+template<class T>
+bool operator==(const complex<T>& a, const T& v) { return a.real() == v && a.imag() == T(); }
+template<class T>
+bool operator==(const T& v, const complex<T>& a) { return a.real() == v && a.imag() == T(); }
+template<class T>
+bool operator!=(const complex<T>& a, const complex<T>& b) { return !(a == b); }
+template<class T>
+bool operator!=(const complex<T>& a, const T& v) { return !(a == v); }
+template<class T>
+bool operator!=(const T& v, const complex<T>& a) { return !(a == v); }
+
+template<class T> T real(const complex<T>& z) { return z.real(); }
+template<class T> T imag(const complex<T>& z) { return z.imag(); }
+template<class T> T abs(const complex<T>& z)  { return sqrt(z.real() * z.real() + z.imag() * z.imag()); }
+template<class T> T arg(const complex<T>& z)  { return atan2(z.imag(), z.real()); }
+template<class T> T norm(const complex<T>& z) { return z.real() * z.real() + z.imag() * z.imag(); }
+template<class T> complex<T> conj(const complex<T>& z) { return complex<T>(z.real(), -z.imag()); }
+template<class T> complex<T> proj(const complex<T>& z) { return z; }
+
+template<class T>
+complex<T> polar(const T& r, const T& th = T()) {
+	return complex<T>(r * cos(th), r * sin(th));
+}
+
+template<class T>
+complex<T> exp(const complex<T>& z) {
+	T e = exp(z.real());
+	return complex<T>(e * cos(z.imag()), e * sin(z.imag()));
+}
+
+template<class T>
+complex<T> log(const complex<T>& z) {
+	return complex<T>(log(abs(z)), arg(z));
+}
+
+template<class T>
+complex<T> log10(const complex<T>& z) {
+	const double ln10 = 2.302585092994046;
+	return log(z) / complex<T>((T)ln10);
+}
+
+template<class T>
+complex<T> sqrt(const complex<T>& z) {
+	/* |z|^1/2 with the sign of the imaginary part deciding the branch */
+	T r = abs(z);
+	if (r == T()) return complex<T>();
+	T a = sqrt((r + z.real()) / (T)2);
+	T b = sqrt((r - z.real()) / (T)2);
+	if (z.imag() < T()) b = -b;
+	return complex<T>(a, b);
+}
+
+template<class T>
+complex<T> pow(const complex<T>& a, const complex<T>& b) {
+	return exp(b * log(a));
+}
+template<class T>
+complex<T> pow(const complex<T>& a, const T& v) { return pow(a, complex<T>(v)); }
+template<class T>
+complex<T> pow(const T& v, const complex<T>& b) { return pow(complex<T>(v), b); }
+template<class T>
+complex<T> pow(const complex<T>& a, int n) {
+	complex<T> base = a, r(1);
+	if (n < 0) { base = T(1) / a; n = -n; }
+	while (n) {
+		if (n & 1) r *= base;
+		base *= base;
+		n >>= 1;
+	}
+	return r;
+}
+
+typedef complex<float>  complex_f;
+typedef complex<double> complex_d;
+typedef complex<long double> complex_l;
+
+}
+
+#endif

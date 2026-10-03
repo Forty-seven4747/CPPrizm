@@ -1,0 +1,371 @@
+#ifndef PRIZM_STL_TREE_BITS
+#define PRIZM_STL_TREE_BITS
+
+/* ---------------------------------------------------------------------------
+   Shared machinery for the ordered containers: map, set, multimap, multiset.
+
+   The Prizm has no libstdc++, so there is no red-black tree to link against.
+   These containers are built on a treap instead - a BST ordered by the key,
+   with each node carrying a random priority and the heap property imposed on
+   those priorities.  For random priorities the expected depth is O(log n) for
+   *any* insertion order, which is the same guarantee a balanced tree gives,
+   and insert/erase are a rotation or two rather than the colour flip and
+   double rotation dance a red-black tree needs.  A treap is roughly a fifth
+   of the code and much easier to check by eye, which matters when the only
+   way to test it is to read it.
+
+   Priorities come from a xorshift generator seeded once per tree, so they are
+   independent of the keys.  That is what makes the depth bound hold; making
+   them depend on the key would turn the tree into a hash-ordered BST whose
+   shape depends on the data.
+
+   Nodes carry a parent pointer, so begin() walks to the minimum and operator++
+   is the standard successor walk.  end() is a null node pointer, and the
+   iterator carries its container so that --end() can still find the maximum -
+   which is what reverse_iterator needs in order to work at all.
+
+   insert_unique refuses a duplicate and returns the existing node, which is
+   what map and set need.  insert_equal always inserts, to the right of any
+   equal keys, which is what the multi containers need - and it means
+   lower_bound finds the first equal, so iterating a multiset visits its
+   duplicates in insertion order.
+   --------------------------------------------------------------------------- */
+
+#include <__stl_bits>
+#include <type_traits>
+#include <utility>
+#include <cstddef>
+
+namespace std {
+
+template<class V, class KeyOf, class Cmp>
+class __stl_treap {
+public:
+	struct node {
+		node*    m_p;
+		node*    m_l;
+		node*    m_r;
+		unsigned m_pri;
+		V        m_v;
+
+		template<class U>
+		explicit node(U&& u) : m_p(0), m_l(0), m_r(0), m_pri(0), m_v(static_cast<U&&>(u)) {}
+	};
+
+	/* ---- iterators --------------------------------------------------- */
+
+	template<class N, class Ref, class Ptr2>
+	class __iter {
+	public:
+		typedef V                          value_type;
+		typedef bidirectional_iterator_tag iterator_category;
+		typedef ptrdiff_t                  difference_type;
+		typedef Ptr2                       pointer;
+		typedef Ref                        reference;
+
+		__iter() : m_t(0), m_n(0) {}
+		__iter(const __stl_treap* t, N* n) : m_t(t), m_n(n) {}
+
+		template<class N2, class R2, class P2> friend class __iter;
+		template<class N2, class R2, class P2>
+		__iter(const __iter<N2, R2, P2>& o) : m_t(o.m_t), m_n(o.m_n) {}
+
+		Ref operator*() const { return m_n->m_v; }
+		Ptr2 operator->() const { return &m_n->m_v; }
+
+		__iter& operator++() { m_n = m_t->__succ(m_n); return *this; }
+		__iter operator++(int) { __iter t(*this); m_n = m_t->__succ(m_n); return t; }
+		__iter& operator--() { m_n = m_t->__pred(m_n); return *this; }
+		__iter operator--(int) { __iter t(*this); m_n = m_t->__pred(m_n); return t; }
+
+		bool operator==(const __iter& o) const { return m_n == o.m_n; }
+		bool operator!=(const __iter& o) const { return m_n != o.m_n; }
+
+		N* __node() const { return m_n; }
+
+	private:
+		const __stl_treap* m_t;
+		N* m_n;
+	};
+
+	typedef __iter<node, V&, V*>             iterator;
+	typedef __iter<const node, const V&, const V*> const_iterator;
+	typedef std::reverse_iterator<iterator>        reverse_iterator;
+	typedef std::reverse_iterator<const_iterator>  const_reverse_iterator;
+
+	__stl_treap() : m_root(0), m_size(0), m_rng(0x2545F491u), m_cmp() {}
+	explicit __stl_treap(const Cmp& c) : m_root(0), m_size(0), m_rng(0x2545F491u), m_cmp(c) {}
+	~__stl_treap() { __clear(); }
+
+	/* ---- size -------------------------------------------------------- */
+
+	bool   empty() const { return m_size == 0; }
+	size_t size()  const { return m_size; }
+
+	/* ---- iteration --------------------------------------------------- */
+
+	iterator begin() { return iterator(this, __min(m_root)); }
+	iterator end()   { return iterator(this, (node*)0); }
+	const_iterator begin() const { return const_iterator(this, __min(m_root)); }
+	const_iterator end()   const { return const_iterator(this, (node*)0); }
+
+	reverse_iterator rbegin() { return reverse_iterator(end()); }
+	reverse_iterator rend()   { return reverse_iterator(begin()); }
+	const_reverse_iterator rbegin() const { return const_reverse_iterator(end()); }
+	const_reverse_iterator rend()   const { return const_reverse_iterator(begin()); }
+
+	/* ---- lookup ------------------------------------------------------ */
+
+	iterator find(const typename KeyOf::type& k) {
+		return iterator(this, __find_node(k));
+	}
+	const_iterator find(const typename KeyOf::type& k) const {
+		return const_iterator(this, __find_node(k));
+	}
+
+	size_t count(const typename KeyOf::type& k) const {
+		node* lo = __lower(k);
+		node* hi = __upper(k);
+		size_t n = 0;
+		while (lo != hi) { ++n; lo = __succ(lo); }
+		return n;
+	}
+
+	iterator lower_bound(const typename KeyOf::type& k) { return iterator(this, __lower(k)); }
+	const_iterator lower_bound(const typename KeyOf::type& k) const {
+		return const_iterator(this, __lower(k));
+	}
+	iterator upper_bound(const typename KeyOf::type& k) { return iterator(this, __upper(k)); }
+	const_iterator upper_bound(const typename KeyOf::type& k) const {
+		return const_iterator(this, __upper(k));
+	}
+
+	pair<iterator, iterator> equal_range(const typename KeyOf::type& k) {
+		return pair<iterator, iterator>(lower_bound(k), upper_bound(k));
+	}
+	pair<const_iterator, const_iterator> equal_range(const typename KeyOf::type& k) const {
+		return pair<const_iterator, const_iterator>(lower_bound(k), upper_bound(k));
+	}
+
+	/* ---- insertion --------------------------------------------------- */
+
+	/* Returns (iterator to the element, true if newly inserted). */
+	pair<iterator, bool> insert_unique(const V& v) {
+		node* hit = __find_node(KeyOf()(v));
+		if (hit) return pair<iterator, bool>(iterator(this, hit), false);
+		return pair<iterator, bool>(iterator(this, __attach(v)), true);
+	}
+	pair<iterator, bool> insert_unique(V&& v) {
+		node* hit = __find_node(KeyOf()(v));
+		if (hit) return pair<iterator, bool>(iterator(this, hit), false);
+		return pair<iterator, bool>(iterator(this, __attach(static_cast<V&&>(v))), true);
+	}
+
+	/* Always inserts, to the right of equal keys. */
+	iterator insert_equal(const V& v) { return iterator(this, __attach(v)); }
+	iterator insert_equal(V&& v)      { return iterator(this, __attach(static_cast<V&&>(v))); }
+
+	/* Hinted forms: the hint is ignored, which the standard permits. */
+	iterator insert_unique(iterator, const V& v) { return iterator(this, __attach(v)); }
+	iterator insert_equal(iterator, const V& v)  { return iterator(this, __attach(v)); }
+
+	/* ---- erase ------------------------------------------------------- */
+
+	void erase_at(iterator pos) { __erase_node(pos.__node()); }
+
+	size_t erase_key(const typename KeyOf::type& k) {
+		size_t n = 0;
+		for (;;) {
+			iterator it = lower_bound(k);
+			if (it == end() || m_cmp(KeyOf()(*it), k) || m_cmp(k, KeyOf()(*it))) break;
+			__erase_node(it.__node());
+			++n;
+		}
+		return n;
+	}
+
+	void clear() { __clear(); }
+
+	void swap(__stl_treap& o) {
+		node* r = m_root; m_root = o.m_root; o.m_root = r;
+		size_t s = m_size; m_size = o.m_size; o.m_size = s;
+		unsigned g = m_rng; m_rng = o.m_rng; o.m_rng = g;
+		Cmp c = m_cmp; m_cmp = o.m_cmp; o.m_cmp = c;
+	}
+
+	/* ---- the tree itself --------------------------------------------- */
+
+	template<class NP> static NP* __min(NP* n) {
+		if (!n) return 0;
+		while (n->m_l) n = n->m_l;
+		return n;
+	}
+	template<class NP> static NP* __max(NP* n) {
+		if (!n) return 0;
+		while (n->m_r) n = n->m_r;
+		return n;
+	}
+	/* In-order successor.  ++end() stays at end. */
+	template<class NP> NP* __succ(NP* n) const {
+		if (!n) return 0;
+		if (n->m_r) return __min(n->m_r);
+		NP* p = n->m_p;
+		while (p && n == p->m_r) { n = p; p = p->m_p; }
+		return p;
+	}
+	/* In-order predecessor.  --end() is the maximum, which is what makes
+	   reverse_iterator over this container work. */
+	template<class NP> NP* __pred(NP* n) const {
+		if (!n) return __max(m_root);
+		if (n->m_l) return __max(n->m_l);
+		NP* p = n->m_p;
+		while (p && n == p->m_l) { n = p; p = p->m_p; }
+		return p;
+	}
+
+private:
+	node*    m_root;
+	size_t   m_size;
+	unsigned m_rng;
+	Cmp      m_cmp;
+
+	bool m_less(const typename KeyOf::type& a, const typename KeyOf::type& b) const {
+		return m_cmp(a, b);
+	}
+
+	node* __find_node(const typename KeyOf::type& k) const {
+		node* n = m_root;
+		while (n) {
+			if (m_less(k, KeyOf()(n->m_v))) n = n->m_l;
+			else if (m_less(KeyOf()(n->m_v), k)) n = n->m_r;
+			else return n;
+		}
+		return 0;
+	}
+
+	/* First node whose key is not less than k. */
+	node* __lower(const typename KeyOf::type& k) const {
+		node* r = 0;
+		node* n = m_root;
+		while (n) {
+			if (m_less(KeyOf()(n->m_v), k)) n = n->m_r;
+			else { r = n; n = n->m_l; }
+		}
+		return r;
+	}
+	/* First node whose key is greater than k. */
+	node* __upper(const typename KeyOf::type& k) const {
+		node* r = 0;
+		node* n = m_root;
+		while (n) {
+			if (m_less(k, KeyOf()(n->m_v))) { r = n; n = n->m_l; }
+			else n = n->m_r;
+		}
+		return r;
+	}
+
+	unsigned __next_pri() {
+		/* xorshift32: three shifts and two xors, no multiply. */
+		unsigned x = m_rng;
+		x ^= x << 13;
+		x ^= x >> 17;
+		x ^= x << 5;
+		m_rng = x ? x : 0x9E3779B9u;
+		return m_rng;
+	}
+
+	template<class U>
+	node* __attach(U&& u) {
+		node* n = (node*)__stl_alloc_bytes(sizeof(node));
+		if (!n) { __stl_fail("std::map/set: out of memory"); return 0; }
+		__stl_construct(&n->m_v, static_cast<U&&>(u));
+		n->m_pri = __next_pri();
+		m_root = __insert_rec(m_root, n);
+		if (m_root) m_root->m_p = 0;
+		++m_size;
+		return n;
+	}
+
+	node* __insert_rec(node* root, node* n) {
+		if (!root) { n->m_l = 0; n->m_r = 0; return n; }
+		if (m_less(KeyOf()(n->m_v), KeyOf()(root->m_v))) {
+			root->m_l = __insert_rec(root->m_l, n);
+			root->m_l->m_p = root;
+			if (root->m_l->m_pri > root->m_pri) root = __rot_right(root);
+		} else {
+			/* Equal keys go right, so insert_equal places duplicates after
+			   the ones already there. */
+			root->m_r = __insert_rec(root->m_r, n);
+			root->m_r->m_p = root;
+			if (root->m_r->m_pri > root->m_pri) root = __rot_left(root);
+		}
+		return root;
+	}
+
+	/* x's left child takes x's place; x becomes its right child.  The caller
+	   assigns the returned node into its parent slot, and __attach fixes
+	   m_root afterwards. */
+	node* __rot_right(node* x) {
+		node* y = x->m_l;
+		node* p = x->m_p;
+		x->m_l = y->m_r;
+		if (y->m_r) y->m_r->m_p = x;
+		y->m_r = x;
+		x->m_p = y;
+		y->m_p = p;
+		if (p) { if (p->m_l == x) p->m_l = y; else p->m_r = y; }
+		return y;
+	}
+	node* __rot_left(node* x) {
+		node* y = x->m_r;
+		node* p = x->m_p;
+		x->m_r = y->m_l;
+		if (y->m_l) y->m_l->m_p = x;
+		y->m_l = x;
+		x->m_p = y;
+		y->m_p = p;
+		if (p) { if (p->m_l == x) p->m_l = y; else p->m_r = y; }
+		return y;
+	}
+	/* The same rotations while rotating a node down for erasure; these own
+	   m_root because nobody above them is going to fix it. */
+	void __rot_right_at(node* x) {
+		node* y = __rot_right(x);
+		if (!y->m_p) m_root = y;
+	}
+	void __rot_left_at(node* x) {
+		node* y = __rot_left(x);
+		if (!y->m_p) m_root = y;
+	}
+
+	/* Rotate n down until it is a leaf, then cut it out and free it. */
+	void __erase_node(node* n) {
+		if (!n) return;
+		while (n->m_l || n->m_r) {
+			if (!n->m_l)      __rot_left_at(n);
+			else if (!n->m_r) __rot_right_at(n);
+			else if (n->m_l->m_pri >= n->m_r->m_pri) __rot_right_at(n);
+			else              __rot_left_at(n);
+		}
+		if (n->m_p) {
+			if (n->m_p->m_l == n) n->m_p->m_l = 0;
+			else n->m_p->m_r = 0;
+		} else {
+			m_root = 0;
+		}
+		__stl_destroy(&n->m_v);
+		__stl_free_bytes(n);
+		--m_size;
+	}
+
+	/* Erasing the root over and over: each call rotates the root down to a
+	   leaf, which is O(depth), so the whole clear is O(n log n) and there is
+	   no recursion to blow the calculator's stack. */
+	void __clear() {
+		while (m_root) __erase_node(m_root);
+	}
+};
+
+}  /* namespace std */
+
+#endif

@@ -1,0 +1,68 @@
+#ifndef PRIZM_CPPSHIM_LIMITS
+#define PRIZM_CPPSHIM_LIMITS
+
+/* <limits>.
+ *
+ * numeric_limits itself is in __stl_bits: <random> and <complex> want it and
+ * so does any code that asks for the biggest int, so it is easier to have one
+ * definition that everything can reach.  This header adds the two enums the
+ * standard declares alongside it and the long double case, which on sh3eb is
+ * the same 8 byte type as double.
+ */
+#include <__stl_bits>
+
+namespace std {
+
+enum float_round_style {
+	round_indeterminate       = -1,
+	round_toward_zero         = 0,
+	round_to_nearest          = 1,
+	round_toward_infinity     = 2,
+	round_toward_neg_infinity = 3
+};
+
+enum float_denorm_style {
+	denorm_indeterminate = -1,
+	denorm_absent        = 0,
+	denorm_present       = 1
+};
+
+template<class T> struct numeric_limits_style {
+	static const bool is_iec559  = false;
+	static const bool is_bounded = false;
+	static const int  radix      = 2;
+	static const float_round_style round_style = round_indeterminate;
+	static const float_denorm_style has_denorm = denorm_indeterminate;
+};
+
+template<> struct numeric_limits<bool> {
+	static const bool is_specialized = true;
+	static const int  digits = 1;
+	static const bool is_signed = false;
+	static const bool is_integer = true;
+	static const bool is_exact = true;
+	static bool min() { return false; }
+	static bool max() { return true; }
+	static bool lowest() { return false; }
+};
+
+/* sh3eb has no FPU and no 80 bit long double, so it behaves exactly like a
+   double.  Saying so avoids a pile of duplicated constants. */
+template<> struct numeric_limits<long double> {
+	static const bool is_specialized = true;
+	static const int  digits = 53;
+	static const bool is_signed = true;
+	static const bool is_integer = false;
+	static const bool is_exact = false;
+	static const int  max_digits10 = 17;
+	static long double min() { return numeric_limits<double>::min(); }
+	static long double max() { return numeric_limits<double>::max(); }
+	static long double lowest() { return numeric_limits<double>::lowest(); }
+	static long double epsilon() { return numeric_limits<double>::epsilon(); }
+	static bool has_infinity() { return true; }
+	static bool has_quiet_NaN() { return true; }
+};
+
+}  /* namespace std */
+
+#endif

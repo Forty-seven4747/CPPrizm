@@ -1,0 +1,243 @@
+#ifndef PRIZM_CPPSHIM_BITSET
+#define PRIZM_CPPSHIM_BITSET
+
+/* <bitset>.
+ *
+ * N bits packed into an array of 32 bit words, which is what the standard's
+ * fixed-size bit set has to be.  bitset<40> is two words; bitset<32> is one.
+ *
+ * operator[] returns a proxy rather than a bool& because a single bit has no
+ * address, so b[i] = 1 needs a little object that knows which word and which
+ * bit.  That proxy is also what makes b[i] usable as an lvalue in general.
+ *
+ * to_ulong on a bitset wider than 32 bits cannot represent its value in the
+ * return type.  The standard would throw overflow_error; here it reports
+ * through prizm_stl_fatal and returns the low word, which keeps the call
+ * compiling without pretending the high bits are not there.
+ *
+ * to_string needs <string>, so this header pulls it in.  The string is built
+ * most significant bit first, as the standard specifies.
+ */
+
+#include <__stl_bits>
+#include <string>
+#include <cstddef>
+
+namespace std {
+
+template<size_t N>
+class bitset {
+public:
+	typedef unsigned long word_type;
+	static const size_t kBitsPerWord = 32;
+	static const size_t kWords = (N + kBitsPerWord - 1) / kBitsPerWord;
+
+	class reference {
+		friend class bitset;
+		reference(word_type* w, word_type m) : m_w(w), m_mask(m) {}
+	public:
+		reference& operator=(bool v) {
+			if (v) *m_w |= m_mask; else *m_w &= ~m_mask;
+			return *this;
+		}
+		reference& operator=(const reference& o) {
+			if (*o.m_w & o.m_mask) *m_w |= m_mask; else *m_w &= ~m_mask;
+			return *this;
+		}
+		operator bool() const { return (*m_w & m_mask) != 0; }
+		bool operator~() const { return (*m_w & m_mask) == 0; }
+		reference& flip() { *m_w ^= m_mask; return *this; }
+	private:
+		word_type* m_w;
+		word_type  m_mask;
+	};
+
+	/* ---- construction ------------------------------------------------ */
+
+	bitset() { __zero(); }
+
+	bitset(unsigned long val) { __from_word(val); }
+
+	/* The string is read most significant bit first, so "100" sets bit 2. */
+	explicit bitset(const string& s, size_t pos = 0, size_t n = (size_t)-1) {
+		__zero();
+		if (pos > s.size()) { __stl_fail("std::bitset: string position out of range"); return; }
+		size_t len = s.size() - pos;
+		if (n < len) len = n;
+		if (len > N) len = N;
+		for (size_t i = 0; i < len; i++) {
+			char c = s[pos + i];
+			if (c == '1') set(len - 1 - i);
+			else if (c != '0') { __stl_fail("std::bitset: bad character in string"); return; }
+		}
+	}
+
+	/* ---- bit access -------------------------------------------------- */
+
+	bitset& set() {
+		for (size_t i = 0; i < kWords; i++) m_w[i] = ~0UL;
+		__mask_tail();
+		return *this;
+	}
+	bitset& set(size_t i, bool v = true) {
+		if (i >= N) { __stl_fail("std::bitset::set out of range"); return *this; }
+		word_type mask = (word_type)1 << (i % kBitsPerWord);
+		if (v) m_w[i / kBitsPerWord] |= mask;
+		else   m_w[i / kBitsPerWord] &= ~mask;
+		return *this;
+	}
+
+	bitset& reset() { __zero(); return *this; }
+	bitset& reset(size_t i) { return set(i, false); }
+
+	bitset& flip() {
+		for (size_t i = 0; i < kWords; i++) m_w[i] = ~m_w[i];
+		__mask_tail();
+		return *this;
+	}
+	bitset& flip(size_t i) {
+		if (i >= N) { __stl_fail("std::bitset::flip out of range"); return *this; }
+		m_w[i / kBitsPerWord] ^= (word_type)1 << (i % kBitsPerWord);
+		return *this;
+	}
+
+	bool test(size_t i) const {
+		if (i >= N) { __stl_fail("std::bitset::test out of range"); return false; }
+		return (m_w[i / kBitsPerWord] >> (i % kBitsPerWord)) & 1;
+	}
+
+	bool operator[](size_t i) const { return test(i); }
+	reference operator[](size_t i) {
+		/* No range check here, matching the standard: operator[] on an out of
+		   range index is undefined behaviour, only test() reports. */
+		return reference(&m_w[i / kBitsPerWord], (word_type)1 << (i % kBitsPerWord));
+	}
+
+	/* ---- queries ----------------------------------------------------- */
+
+	size_t size() const { return N; }
+	size_t count() const {
+		size_t n = 0;
+		for (size_t i = 0; i < kWords; i++) {
+			/* Popcount by the shift-and-add identity; no hardware instruction
+			   on this target, so a small loop per word is as good as anything. */
+			word_type x = m_w[i];
+			while (x) { x &= x - 1; ++n; }
+		}
+		return n;
+	}
+	bool any()  const { return count() != 0; }
+	bool none() const { return count() == 0; }
+	bool all()  const { return count() == N; }
+
+	/* Only the low 32 bits can be represented; anything above that is a
+	   caller error and reports through prizm_stl_fatal. */
+	unsigned long to_ulong() const {
+		if (N > kBitsPerWord) {
+			for (size_t i = 1; i < kWords; i++)
+				if (m_w[i]) { __stl_fail("std::bitset::to_ulong overflow"); break; }
+		}
+		return m_w[0];
+	}
+
+	string to_string() const {
+		string r;
+		r.reserve(N);
+		for (size_t i = N; i-- > 0; ) r.push_back(test(i) ? '1' : '0');
+		return r;
+	}
+
+	/* ---- bitwise ----------------------------------------------------- */
+
+	bitset operator&(const bitset& o) const {
+		bitset r;
+		for (size_t i = 0; i < kWords; i++) r.m_w[i] = m_w[i] & o.m_w[i];
+		return r;
+	}
+	bitset operator|(const bitset& o) const {
+		bitset r;
+		for (size_t i = 0; i < kWords; i++) r.m_w[i] = m_w[i] | o.m_w[i];
+		return r;
+	}
+	bitset operator^(const bitset& o) const {
+		bitset r;
+		for (size_t i = 0; i < kWords; i++) r.m_w[i] = m_w[i] ^ o.m_w[i];
+		return r;
+	}
+	bitset operator~() const {
+		bitset r;
+		for (size_t i = 0; i < kWords; i++) r.m_w[i] = ~m_w[i];
+		r.__mask_tail();
+		return r;
+	}
+
+	bitset operator<<(size_t n) const {
+		bitset r;
+		if (n >= N) return r;
+		size_t wi = n / kBitsPerWord, bi = n % kBitsPerWord;
+		for (size_t i = 0; i < kWords; i++) {
+			word_type lo = 0, hi = 0;
+			if (i >= wi) lo = m_w[i - wi] << bi;
+			if (i + 1 >= wi && bi) {
+				size_t src = i + 1 - wi;
+				if (src < kWords) hi = m_w[src] >> (kBitsPerWord - bi);
+			}
+			r.m_w[i] = lo | hi;
+		}
+		r.__mask_tail();
+		return r;
+	}
+	bitset operator>>(size_t n) const {
+		bitset r;
+		if (n >= N) return r;
+		size_t wi = n / kBitsPerWord, bi = n % kBitsPerWord;
+		for (size_t i = 0; i < kWords; i++) {
+			word_type hi = 0, lo = 0;
+			if (i + wi < kWords) hi = m_w[i + wi] >> bi;
+			if (bi && i + wi + 1 < kWords) lo = m_w[i + wi + 1] << (kBitsPerWord - bi);
+			r.m_w[i] = hi | lo;
+		}
+		r.__mask_tail();
+		return r;
+	}
+
+	bitset& operator&=(const bitset& o) { return *this = *this & o; }
+	bitset& operator|=(const bitset& o) { return *this = *this | o; }
+	bitset& operator^=(const bitset& o) { return *this = *this ^ o; }
+	bitset& operator<<=(size_t n) { return *this = *this << n; }
+	bitset& operator>>=(size_t n) { return *this = *this >> n; }
+
+private:
+	word_type m_w[kWords ? kWords : 1];
+
+	void __zero() {
+		for (size_t i = 0; i < kWords; i++) m_w[i] = 0;
+	}
+	void __from_word(unsigned long val) {
+		__zero();
+		m_w[0] = val;
+		if (N < kBitsPerWord) m_w[0] &= ((word_type)1 << N) - 1;
+	}
+	/* Bits past N are never meaningful; clearing them keeps count, all and
+	   the comparisons honest without every caller having to remember. */
+	void __mask_tail() {
+		size_t rem = N % kBitsPerWord;
+		if (rem) m_w[kWords - 1] &= ((word_type)1 << rem) - 1;
+		for (size_t i = (rem ? kWords : 0); i < kWords; i++) m_w[i] = 0;
+	}
+};
+
+template<size_t N>
+inline bool operator==(const bitset<N>& a, const bitset<N>& b) {
+	/* Bit at a time, because the words are private and a word-wise compare
+	   would need a friend declaration for one line of code. */
+	for (size_t i = 0; i < N; i++)
+		if (a[i] != b[i]) return false;
+	return true;
+}
+template<size_t N>
+inline bool operator!=(const bitset<N>& a, const bitset<N>& b) { return !(a == b); }
+
+}  /* namespace std */
+
+#endif

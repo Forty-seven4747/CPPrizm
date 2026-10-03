@@ -1,0 +1,248 @@
+#ifndef PRIZM_CPPLIB_CHRONO
+#define PRIZM_CPPLIB_CHRONO
+
+/* duration / time_point / clocks.  Tick source is the C clock() from
+   <ctime>; on the Prizm that counts SDK ticks, good enough for measuring
+   intervals inside a program. */
+
+#include <ctime>
+#include <cstdint>
+#include <type_traits>
+
+namespace std {
+
+namespace __chrono {
+
+template<long long Num, long long Den = 1>
+struct ratio {
+	static const long long num = Num;
+	static const long long den = Den;
+};
+
+typedef ratio<1, 1000000000> nano;
+typedef ratio<1, 1000000>    micro;
+typedef ratio<1, 1000>       milli;
+typedef ratio<1, 1>          ratio1;
+typedef ratio<60, 1>         ratio60;
+typedef ratio<3600, 1>       ratio3600;
+
+template<class Rep, class Period> class duration;
+
+template<long long A, long long B> struct gcd_t { static const long long value = gcd_t<B, A % B>::value; };
+template<long long A> struct gcd_t<A, 0> { static const long long value = A; };
+template<long long A, long long B> struct lcm_t { static const long long value = A / gcd_t<A, B>::value * B; };
+
+template<class R1, class R2> struct ratio_mul { typedef ratio<R1::num * R2::num, R1::den * R2::den> type; };
+template<class R1, class R2> struct ratio_div { typedef ratio<R1::num * R2::den, R1::den * R2::num> type; };
+
+template<class R1, class R2>
+struct ratio_common {
+	typedef ratio<lcm_t<R1::num, R2::num>::value, gcd_t<R1::den, R2::den>::value> type;
+};
+
+template<class D> struct is_duration : false_type {};
+template<class R, class P> struct is_duration<duration<R, P> > : true_type {};
+
+/* The common duration of two durations: wider rep, FINER period - the
+   common period divides both input periods, so it is gcd of the numerators
+   and lcm of the denominators (2h + 30min must land in minutes, not
+   truncated hours). */
+template<class R1, class P1, class R2, class P2, bool = true>
+struct common_duration {
+	typedef typename ratio_common<P1, P2>::type            CP;
+	typedef duration<typename common_type<R1, R2>::type, CP> type;
+};
+
+/* Conversion factor from PFrom to PTo as a rational; exactness decides
+   whether a cross-period duration conversion may be implicit. */
+template<class PTo, class PFrom>
+struct conv_exact {
+	typedef typename ratio_div<PFrom, PTo>::type S;
+	static const bool      value = (S::num % S::den) == 0;
+	static const long long snum  = S::num;
+	static const long long sden  = S::den;
+	static const long long mul   = S::num / S::den;   /* meaningful when exact */
+};
+template<class PTo, class PFrom, class RFrom, class RTo>
+struct conv_ok {
+	static const bool value = conv_exact<PTo, PFrom>::value && is_convertible<RFrom, RTo>::value;
+};
+
+template<class Rep, class Period = ratio1>
+class duration {
+public:
+	typedef Rep rep;
+	typedef Period period;
+
+	duration() : m_r(0) {}
+	explicit duration(const rep& r) : m_r(r) {}
+
+	/* Cross-period conversion.  Implicit when no information is lost
+	   (exact ratio and convertible rep); explicit (truncating) otherwise. */
+	template<class R2, class P2>
+	duration(const duration<R2, P2>& d,
+	         typename enable_if<conv_ok<Period, P2, R2, Rep>::value, int>::type = 0)
+	    : m_r((Rep)(d.count() * conv_exact<Period, P2>::mul)) {}
+
+	template<class R2, class P2>
+	explicit duration(const duration<R2, P2>& d,
+	         typename enable_if<!conv_ok<Period, P2, R2, Rep>::value, int>::type = 0)
+	    : m_r((Rep)((long double)d.count()
+	        * (long double)conv_exact<Period, P2>::snum / (long double)conv_exact<Period, P2>::sden)) {}
+
+	rep count() const { return m_r; }
+
+	duration operator+() const { return *this; }
+	duration operator-() const { return duration(-m_r); }
+	duration operator++(int)  { duration t(*this); ++m_r; return t; }
+	duration& operator++()    { ++m_r; return *this; }
+	duration operator--(int)  { duration t(*this); --m_r; return t; }
+	duration& operator--()    { --m_r; return *this; }
+
+	duration& operator+=(const duration& o) { m_r += o.m_r; return *this; }
+	duration& operator-=(const duration& o) { m_r -= o.m_r; return *this; }
+	duration& operator*=(const rep& r)      { m_r *= r; return *this; }
+	duration& operator/=(const rep& r)      { m_r /= r; return *this; }
+	duration& operator%=(const rep& r)      { m_r %= r; return *this; }
+	duration& operator%=(const duration& o) { m_r %= o.m_r; return *this; }
+
+private:
+	rep m_r;
+};
+
+#define __CHRONO_BINOP(op)                                                   \
+template<class R1, class P1, class R2, class P2>                             \
+typename common_duration<R1, P1, R2, P2>::type                               \
+operator op (const duration<R1, P1>& a, const duration<R2, P2>& b) {         \
+	typedef typename common_duration<R1, P1, R2, P2>::type CD;               \
+	typedef typename CD::rep R;                                              \
+	return CD((R)a.count() op (R)b.count());                                 \
+}
+
+__CHRONO_BINOP(+)
+__CHRONO_BINOP(-)
+
+#undef __CHRONO_BINOP
+
+/* duration * scalar and duration / scalar keep the left duration's type when
+   the scalar is arithmetic. */
+template<class R, class P, class S>
+duration<R, P> operator*(const duration<R, P>& a, const S& s) { return duration<R, P>(a.count() * s); }
+template<class R, class P, class S>
+duration<R, P> operator*(const S& s, const duration<R, P>& a) { return duration<R, P>(a.count() * s); }
+template<class R, class P, class S>
+duration<R, P> operator/(const duration<R, P>& a, const S& s) { return duration<R, P>(a.count() / s); }
+/* duration / duration -> rep quotient */
+template<class R1, class P1, class R2, class P2>
+typename common_type<R1, R2>::type
+operator/(const duration<R1, P1>& a, const duration<R2, P2>& b) {
+	typedef typename common_duration<R1, P1, R2, P2>::type CD;
+	return (typename common_type<R1, R2>::type)CD(a).count() / (typename common_type<R1, R2>::type)CD(b).count();
+}
+
+#define __CHRONO_CMP(op)                                                     \
+template<class R1, class P1, class R2, class P2>                             \
+bool operator op (const duration<R1, P1>& a, const duration<R2, P2>& b) {    \
+	typedef typename common_duration<R1, P1, R2, P2>::type CD;               \
+	return CD(a).count() op CD(b).count();                                   \
+}
+
+__CHRONO_CMP(==)
+__CHRONO_CMP(!=)
+__CHRONO_CMP(<)
+__CHRONO_CMP(<=)
+__CHRONO_CMP(>)
+__CHRONO_CMP(>=)
+
+#undef __CHRONO_CMP
+
+/* Truncating conversion, like the standard's duration_cast. */
+template<class ToDur, class Rep, class Period>
+typename enable_if<is_duration<ToDur>::value, ToDur>::type
+duration_cast(const duration<Rep, Period>& d) {
+	typedef typename duration<Rep, Period>::period PFrom;
+	typedef typename ToDur::period                 PTo;
+	typedef typename ratio_div<PFrom, PTo>::type   Scale;
+	return ToDur((typename ToDur::rep)
+	    ((long double)d.count() * (long double)Scale::num / (long double)Scale::den));
+}
+
+} /* namespace __chrono */
+
+using __chrono::duration;
+using __chrono::duration_cast;
+
+typedef duration<long long, __chrono::nano>  nanoseconds;
+typedef duration<long long, __chrono::micro> microseconds;
+typedef duration<long long, __chrono::milli> milliseconds;
+typedef duration<long long>                  seconds;
+typedef duration<long long, __chrono::ratio60>   minutes;
+typedef duration<long long, __chrono::ratio3600> hours;
+
+template<class Clock, class Duration = typename Clock::duration>
+class time_point {
+public:
+	typedef Clock    clock;
+	typedef Duration duration;
+
+	time_point() : m_d(typename Duration::rep()) {}
+	explicit time_point(const Duration& d) : m_d(d) {}
+
+	duration time_since_epoch() const { return m_d; }
+	time_point& operator+=(const Duration& d) { m_d += d; return *this; }
+	time_point& operator-=(const Duration& d) { m_d -= d; return *this; }
+private:
+	Duration m_d;
+};
+
+#define __CHRONO_TP_CMP(op)                                                  \
+template<class C1, class D1, class C2, class D2>                             \
+bool operator op (const time_point<C1, D1>& a, const time_point<C2, D2>& b) {\
+	return a.time_since_epoch() op b.time_since_epoch();                     \
+}
+
+__CHRONO_TP_CMP(==)
+__CHRONO_TP_CMP(!=)
+__CHRONO_TP_CMP(<)
+__CHRONO_TP_CMP(<=)
+__CHRONO_TP_CMP(>)
+__CHRONO_TP_CMP(>=)
+
+#undef __CHRONO_TP_CMP
+
+class steady_clock {
+public:
+	typedef nanoseconds duration;
+	typedef typename duration::rep    rep;
+	typedef typename duration::period period;
+	typedef ::std::time_point<steady_clock> time_point;
+	static time_point now() {
+		return time_point(duration((long long)clock()));
+	}
+};
+
+typedef steady_clock system_clock;
+typedef steady_clock high_resolution_clock;
+
+/* to_time_t: reports the raw tick count; the Prizm has no epoch to anchor a
+   wall clock to. */
+inline time_t to_time_t(const time_point<steady_clock>& t) {
+	return (time_t)t.time_since_epoch().count();
+}
+
+namespace chrono_literals {
+
+inline hours        operator""_h(unsigned long long v)  { return hours((long long)v); }
+inline minutes      operator""_min(unsigned long long v){ return minutes((long long)v); }
+inline seconds      operator""_s(unsigned long long v)  { return seconds((long long)v); }
+inline milliseconds operator""_ms(unsigned long long v) { return milliseconds((long long)v); }
+inline microseconds operator""_us(unsigned long long v) { return microseconds((long long)v); }
+inline nanoseconds  operator""_ns(unsigned long long v) { return nanoseconds((long long)v); }
+
+}
+
+using namespace chrono_literals;
+
+}
+
+#endif

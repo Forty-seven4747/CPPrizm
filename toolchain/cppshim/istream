@@ -1,0 +1,4 @@
+#ifndef PRIZM_CPPSHIM_ISTREAM
+#define PRIZM_CPPSHIM_ISTREAM
+#include <iostream>
+#endif

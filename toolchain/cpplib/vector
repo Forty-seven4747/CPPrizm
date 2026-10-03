@@ -1,0 +1,401 @@
+#ifndef PRIZM_CPPSHIM_VECTOR
+#define PRIZM_CPPSHIM_VECTOR
+
+/* <vector>.
+ *
+ * A contiguous, heap backed array that grows.  Storage comes from malloc via
+ * the allocator in __stl_bits, so there is no exceptions case to handle: when
+ * an allocation fails the vector is left exactly as it was and the operation
+ * reports through prizm_stl_fatal, which is the closest thing to "throw
+ * bad_alloc" this target has.
+ *
+ * Growth is geometric (max(2 * capacity, needed, 8)), which is what makes the
+ * amortised push_back O(1) the standard promises.  Elements are memmoved
+ * rather than copied whenever T is trivially copyable, which is the common
+ * case in console code (int, struct of ints, char).
+ *
+ * std::vector<bool> is NOT bit packed: it is the same as std::vector<char>.
+ * Bit packing would need proxy references, and the memory it would save does
+ * not matter on a calculator where a vector<bool> is rare and small.
+ */
+
+#include <__stl_bits>
+#include <type_traits>
+#include <initializer_list>
+#include <new>
+#include <cstddef>
+
+namespace std {
+
+template<class T, class A = allocator<T> >
+class vector {
+public:
+	typedef T                  value_type;
+	typedef A                  allocator_type;
+	typedef size_t             size_type;
+	typedef ptrdiff_t          difference_type;
+	typedef T&                 reference;
+	typedef const T&           const_reference;
+	typedef T*                 pointer;
+	typedef const T*           const_pointer;
+	typedef T*                 iterator;
+	typedef const T*           const_iterator;
+	typedef std::reverse_iterator<iterator>       reverse_iterator;
+	typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
+
+	/* ---- construction ---------------------------------------------- */
+
+	vector() : m_p(0), m_n(0), m_cap(0) {}
+
+	explicit vector(size_type n) : m_p(0), m_n(0), m_cap(0) { __fill(n, T()); }
+	vector(size_type n, const T& v) : m_p(0), m_n(0), m_cap(0) { __fill(n, v); }
+
+	/* The iterator pair constructors are constrained to non-integral types,
+	   otherwise vector<int> v(5, 7) would pick this one: 5 and 7 are an exact
+	   match for (It, It), while (size_type, const T&) needs a conversion. */
+	template<class It, class = typename enable_if<!is_integral<It>::value>::type>
+	vector(It first, It last) : m_p(0), m_n(0), m_cap(0) {
+		for (; first != last; ++first) push_back(*first);
+	}
+
+	vector(const vector& o) : m_p(0), m_n(0), m_cap(0) {
+		__append_block(o.m_p, o.m_n);
+	}
+	vector(vector&& o) : m_p(o.m_p), m_n(o.m_n), m_cap(o.m_cap) {
+		o.m_p = 0; o.m_n = 0; o.m_cap = 0;
+	}
+
+	vector(std::initializer_list<T> il) : m_p(0), m_n(0), m_cap(0) {
+		__append_block(il.begin(), il.size());
+	}
+
+	~vector() { __destroy_all(); }
+
+	vector& operator=(const vector& o) {
+		if (this != &o) { vector t(o); swap(t); }
+		return *this;
+	}
+	vector& operator=(vector&& o) {
+		if (this != &o) { vector t(static_cast<vector&&>(o)); swap(t); }
+		return *this;
+	}
+	vector& operator=(std::initializer_list<T> il) {
+		vector t(il); swap(t); return *this;
+	}
+
+	void assign(size_type n, const T& v) { vector t(n, v); swap(t); }
+
+	template<class It, class = typename enable_if<!is_integral<It>::value>::type>
+	void assign(It first, It last) { vector t(first, last); swap(t); }
+
+	void assign(std::initializer_list<T> il) { vector t(il); swap(t); }
+
+	allocator_type get_allocator() const { return allocator_type(); }
+
+	/* ---- element access -------------------------------------------- */
+
+	reference       operator[](size_type i)       { return m_p[i]; }
+	const_reference operator[](size_type i) const { return m_p[i]; }
+
+	reference at(size_type i) {
+		if (i >= m_n) { __stl_fail("std::vector::at out of range"); return m_p[0]; }
+		return m_p[i];
+	}
+	const_reference at(size_type i) const {
+		if (i >= m_n) { __stl_fail("std::vector::at out of range"); return m_p[0]; }
+		return m_p[i];
+	}
+
+	reference       front()       { return m_p[0]; }
+	const_reference front() const { return m_p[0]; }
+	reference       back()        { return m_p[m_n - 1]; }
+	const_reference back() const  { return m_p[m_n - 1]; }
+	T*       data()       { return m_p; }
+	const T* data() const { return m_p; }
+
+	/* ---- iteration -------------------------------------------------- */
+
+	iterator       begin()        { return m_p; }
+	iterator       end()          { return m_p + m_n; }
+	const_iterator begin()  const { return m_p; }
+	const_iterator end()    const { return m_p + m_n; }
+	const_iterator cbegin() const { return m_p; }
+	const_iterator cend()   const { return m_p + m_n; }
+
+	reverse_iterator       rbegin()        { return reverse_iterator(end()); }
+	reverse_iterator       rend()          { return reverse_iterator(begin()); }
+	const_reverse_iterator rbegin()  const { return const_reverse_iterator(end()); }
+	const_reverse_iterator rend()    const { return const_reverse_iterator(begin()); }
+	const_reverse_iterator crbegin() const { return const_reverse_iterator(end()); }
+	const_reverse_iterator crend()   const { return const_reverse_iterator(begin()); }
+
+	/* ---- size and capacity ----------------------------------------- */
+
+	bool      empty()    const { return m_n == 0; }
+	size_type size()     const { return m_n; }
+	size_type capacity() const { return m_cap; }
+	size_type max_size() const { return (size_type)-1 / sizeof(T); }
+
+	void reserve(size_type n) {
+		if (n > m_cap) __realloc_to(n);
+	}
+	void shrink_to_fit() {
+		if (m_n < m_cap) __realloc_to(m_n);
+	}
+
+	void resize(size_type n) {
+		if (n < m_n) {
+			__stl_destroy_range(m_p + n, m_p + m_n);
+			m_n = n;
+		} else if (n > m_n) {
+			if (n > m_cap) __realloc_to(__next_cap(n));
+			__stl_uninit_fill_n(m_p + m_n, n - m_n, T());
+			m_n = n;
+		}
+	}
+	void resize(size_type n, const T& v) {
+		if (n < m_n) {
+			__stl_destroy_range(m_p + n, m_p + m_n);
+			m_n = n;
+		} else if (n > m_n) {
+			if (n > m_cap) __realloc_to(__next_cap(n));
+			__stl_uninit_fill_n(m_p + m_n, n - m_n, v);
+			m_n = n;
+		}
+	}
+
+	/* ---- modifiers -------------------------------------------------- */
+
+	void clear() {
+		__stl_destroy_range(m_p, m_p + m_n);
+		m_n = 0;
+	}
+
+	void push_back(const T& v) { __push_back(v); }
+
+	void push_back(T&& v) { __push_back(static_cast<T&&>(v)); }
+
+	template<class... Args>
+	reference emplace_back(Args&&... args) {
+		if (m_n == m_cap) {
+			if (!__reserve_for(m_n + 1)) return m_p[m_n ? m_n - 1 : 0];
+		}
+		__stl_construct(m_p + m_n, static_cast<Args&&>(args)...);
+		++m_n;
+		return m_p[m_n - 1];
+	}
+
+	void pop_back() {
+		if (m_n) { --m_n; __stl_destroy(m_p + m_n); }
+	}
+
+	iterator insert(iterator pos, const T& v) {
+		size_type idx = (size_type)(pos - m_p);
+		T tmp(v);                       /* also makes self insertion safe */
+		return __insert_one(idx, static_cast<T&&>(tmp));
+	}
+	iterator insert(iterator pos, T&& v) {
+		size_type idx = (size_type)(pos - m_p);
+		T tmp(static_cast<T&&>(v));
+		return __insert_one(idx, static_cast<T&&>(tmp));
+	}
+
+	iterator insert(iterator pos, size_type n, const T& v) {
+		size_type idx = (size_type)(pos - m_p);
+		if (n == 0) return m_p + idx;
+		vector tmp(n, v);               /* self insertion safe */
+		return __insert_range(idx, tmp.m_p, tmp.m_n);
+	}
+
+	template<class It, class = typename enable_if<!is_integral<It>::value>::type>
+	iterator insert(iterator pos, It first, It last) {
+		size_type idx = (size_type)(pos - m_p);
+		vector tmp(first, last);        /* self insertion safe */
+		return __insert_range(idx, tmp.m_p, tmp.m_n);
+	}
+
+	iterator insert(iterator pos, std::initializer_list<T> il) {
+		return insert(pos, il.begin(), il.end());
+	}
+
+	template<class... Args>
+	iterator emplace(iterator pos, Args&&... args) {
+		size_type idx = (size_type)(pos - m_p);
+		T tmp(static_cast<Args&&>(args)...);
+		return __insert_one(idx, static_cast<T&&>(tmp));
+	}
+
+	iterator erase(iterator pos) {
+		size_type idx = (size_type)(pos - m_p);
+		if (idx >= m_n) return m_p + m_n;
+		__shift_down(idx, 1);
+		return m_p + idx;
+	}
+
+	iterator erase(iterator first, iterator last) {
+		size_type idx = (size_type)(first - m_p);
+		size_type cnt = (size_type)(last - first);
+		if (cnt == 0) return m_p + idx;
+		__shift_down(idx, cnt);
+		return m_p + idx;
+	}
+
+	void swap(vector& o) {
+		T* a = m_p; m_p = o.m_p; o.m_p = a;
+		size_type b = m_n; m_n = o.m_n; o.m_n = b;
+		b = m_cap; m_cap = o.m_cap; o.m_cap = b;
+	}
+
+private:
+	T*        m_p;
+	size_type m_n;
+	size_type m_cap;
+
+	/* ---- growth ----------------------------------------------------- */
+
+	size_type __next_cap(size_type needed) const {
+		size_type grown = m_cap ? m_cap * 2 : 8;
+		return grown > needed ? grown : needed;
+	}
+
+	/* Copy n elements from src into freshly allocated storage.  Used only
+	   when this vector is empty, so there is nothing to free. */
+	void __append_block(const T* src, size_type n) {
+		if (n == 0) return;
+		T* p = (T*)__stl_alloc_bytes(n * sizeof(T));
+		if (!p) { __stl_fail("std::vector: out of memory"); return; }
+		__stl_uninit_copy_n(p, src, n);
+		m_p = p; m_n = n; m_cap = n;
+	}
+
+	void __fill(size_type n, const T& v) {
+		if (n == 0) return;
+		T* p = (T*)__stl_alloc_bytes(n * sizeof(T));
+		if (!p) { __stl_fail("std::vector: out of memory"); return; }
+		__stl_uninit_fill_n(p, n, v);
+		m_p = p; m_n = n; m_cap = n;
+	}
+
+	/* Move the existing contents into a fresh block of at least `n` slots.
+	   If the allocation fails nothing changes. */
+	void __realloc_to(size_type n) {
+		T* p = (T*)__stl_alloc_bytes(n * sizeof(T));
+		if (!p) { __stl_fail("std::vector: out of memory"); return; }
+		__stl_uninit_move_n(p, m_p, m_n);
+		if (m_p) {
+			__stl_destroy_range(m_p, m_p + m_n);
+			__stl_free_bytes(m_p);
+		}
+		m_p = p; m_cap = n;
+	}
+
+	/* Make room for at least `needed` elements, returning false if the
+	   allocation failed. */
+	bool __reserve_for(size_type needed) {
+		size_type before = m_cap;
+		__realloc_to(__next_cap(needed));
+		return m_cap != before;
+	}
+
+	void __push_back(const T& v) {
+		if (m_n == m_cap && !__reserve_for(m_n + 1)) return;
+		__stl_construct(m_p + m_n, v);
+		++m_n;
+	}
+	void __push_back(T&& v) {
+		if (m_n == m_cap && !__reserve_for(m_n + 1)) return;
+		__stl_construct(m_p + m_n, static_cast<T&&>(v));
+		++m_n;
+	}
+
+	void __destroy_all() {
+		if (m_p) {
+			__stl_destroy_range(m_p, m_p + m_n);
+			__stl_free_bytes(m_p);
+		}
+	}
+
+	/* ---- shifting --------------------------------------------------- */
+
+	/* Open a gap of k slots at idx.  On entry capacity must already allow
+	   m_n + k elements.  Only the first m_n slots are live. */
+	void __open_gap(size_type idx, size_type k) {
+		if (k == 0 || idx >= m_n) return;
+		size_type move = m_n - idx;
+		if (__stl_trivial<T>::value) {
+			__stl_move_block(m_p + idx + k, m_p + idx, move);
+		} else {
+			size_type i = m_n;
+			while (i > idx) {
+				--i;
+				if (i + k >= m_n) __stl_construct(m_p + i + k, static_cast<T&&>(m_p[i]));
+				else               m_p[i + k] = static_cast<T&&>(m_p[i]);
+			}
+		}
+	}
+
+	/* Close a gap of k slots starting at idx. */
+	void __shift_down(size_type idx, size_type k) {
+		size_type keep = m_n - idx - k;
+		if (keep && __stl_trivial<T>::value) {
+			__stl_move_block(m_p + idx, m_p + idx + k, keep);
+		} else if (keep) {
+			for (size_type i = 0; i < keep; i++)
+				m_p[idx + i] = static_cast<T&&>(m_p[idx + k + i]);
+		}
+		__stl_destroy_range(m_p + m_n - k, m_p + m_n);
+		m_n -= k;
+	}
+
+	iterator __insert_one(size_type idx, T&& tmp) {
+		if (m_n == m_cap && !__reserve_for(m_n + 1)) return m_p + idx;
+		__open_gap(idx, 1);
+		__stl_construct(m_p + idx, static_cast<T&&>(tmp));
+		++m_n;
+		return m_p + idx;
+	}
+
+	iterator __insert_range(size_type idx, T* src, size_type n) {
+		if (n == 0) return m_p + idx;
+		if (m_n + n > m_cap && !__reserve_for(m_n + n)) return m_p + idx;
+		__open_gap(idx, n);
+		__stl_uninit_move_n(m_p + idx, src, n);
+		m_n += n;
+		return m_p + idx;
+	}
+};
+
+/* ---- comparisons ------------------------------------------------------ */
+
+template<class T, class A>
+inline bool operator==(const vector<T, A>& a, const vector<T, A>& b) {
+	if (a.size() != b.size()) return false;
+	for (size_t i = 0; i < a.size(); i++)
+		if (!(a[i] == b[i])) return false;
+	return true;
+}
+template<class T, class A>
+inline bool operator!=(const vector<T, A>& a, const vector<T, A>& b) { return !(a == b); }
+
+template<class T, class A>
+inline bool operator<(const vector<T, A>& a, const vector<T, A>& b) {
+	size_t n = a.size() < b.size() ? a.size() : b.size();
+	for (size_t i = 0; i < n; i++) {
+		if (a[i] < b[i]) return true;
+		if (b[i] < a[i]) return false;
+	}
+	return a.size() < b.size();
+}
+template<class T, class A>
+inline bool operator>(const vector<T, A>& a, const vector<T, A>& b) { return b < a; }
+template<class T, class A>
+inline bool operator<=(const vector<T, A>& a, const vector<T, A>& b) { return !(b < a); }
+template<class T, class A>
+inline bool operator>=(const vector<T, A>& a, const vector<T, A>& b) { return !(a < b); }
+
+template<class T, class A>
+inline void swap(vector<T, A>& a, vector<T, A>& b) { a.swap(b); }
+
+}  /* namespace std */
+
+#endif

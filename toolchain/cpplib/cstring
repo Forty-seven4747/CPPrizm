@@ -1,0 +1,37 @@
+#ifndef PRIZM_CPPSHIM_CSTRING
+#define PRIZM_CPPSHIM_CSTRING
+
+/* The SDK's string.h already declares the whole C set and libfxcg implements
+   it, so this wrapper only re-exports the names inside namespace std. */
+#include <string.h>
+
+namespace std {
+using ::size_t;
+
+using ::memccpy;
+using ::memchr;
+using ::memcmp;
+using ::memcpy;
+using ::memmove;
+using ::memset;
+
+using ::strcat;
+using ::strchr;
+using ::strcmp;
+using ::strcoll;
+using ::strcpy;
+using ::strcspn;
+using ::strdup;
+using ::strlen;
+using ::strncat;
+using ::strncmp;
+using ::strncpy;
+using ::strpbrk;
+using ::strrchr;
+using ::strspn;
+using ::strstr;
+using ::strtok;
+using ::strxfrm;
+}
+
+#endif

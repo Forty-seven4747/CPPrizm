@@ -1,0 +1,276 @@
+#ifndef PRIZM_CPPSHIM_IOSTREAM
+#define PRIZM_CPPSHIM_IOSTREAM
+
+#include <stddef.h>
+
+/* Real <iostream> drags in <string> as a side effect, and a lot of console
+   code relies on that without ever including it, so this shim does the same.
+   Programs that do include <string> on their own get the same header again
+   thanks to its guard. */
+#include <string>
+
+namespace std {
+
+typedef long streamsize;
+
+/* ios-like formatting flags.  Kept at namespace scope with __ios_ prefixes
+   because std::dec / std::hex are already manipulator function names. */
+enum {
+	__ios_dec        = 0x0001,
+	__ios_oct        = 0x0002,
+	__ios_hex        = 0x0004,
+	__ios_fixed      = 0x0008,
+	__ios_sci        = 0x0010,
+	__ios_showbase   = 0x0020,
+	__ios_showpoint  = 0x0040,
+	__ios_showpos    = 0x0080,
+	__ios_uppercase  = 0x0100,
+	__ios_boolalpha  = 0x0200,
+	__ios_left       = 0x0400,
+	__ios_right      = 0x0800,
+	__ios_internal   = 0x1000,
+	__ios_skipws     = 0x2000,
+	__ios_basefield  = __ios_dec | __ios_oct | __ios_hex,
+	__ios_floatfield = __ios_fixed | __ios_sci,
+	__ios_adjustfield = __ios_left | __ios_right | __ios_internal
+};
+
+class ostream {
+public:
+	ostream() : m_flags(__ios_dec), m_prec(6), m_width(0), m_fill(' ') {}
+	virtual ~ostream() {}
+
+	ostream& operator<<(const char* s)      { return __emit(s, (long)__builtin_strlen(s)); }
+	ostream& operator<<(char* s)            { return *this << (const char*)s; }
+	ostream& operator<<(char c)             { return __emit(&c, 1); }
+	ostream& operator<<(signed char c)      { char t = (char)c; return __emit(&t, 1); }
+	ostream& operator<<(unsigned char c)    { char t = (char)c; return __emit(&t, 1); }
+	ostream& operator<<(bool v);
+
+	ostream& operator<<(short v)            { return *this << (int)v; }
+	ostream& operator<<(unsigned short v)   { return *this << (unsigned int)v; }
+	ostream& operator<<(int v);
+	ostream& operator<<(unsigned int v);
+	ostream& operator<<(long v)             { return *this << (long long)v; }
+	ostream& operator<<(unsigned long v)    { return *this << (unsigned long long)v; }
+	ostream& operator<<(long long v);
+	ostream& operator<<(unsigned long long v);
+
+	ostream& operator<<(double v);
+	ostream& operator<<(float v)            { return *this << (double)v; }
+	ostream& operator<<(const void* p);
+
+	ostream& operator<<(ostream& (*fn)(ostream&)) { return fn(*this); }
+
+	/* Output sink.  The console stream prints; a stream buffer (see
+	   <sstream>) overrides these to capture instead. */
+	virtual ostream& put(char c);
+	virtual ostream& write(const char* s, long n);
+	virtual ostream& flush();
+
+	ostream& textcolor(int c);
+	ostream& bgcolor(int c);
+
+	/* ios_base state */
+	int  flags() const          { return m_flags; }
+	int  flags(int f)           { int o = m_flags; m_flags = f; return o; }
+	int  setf(int f)            { m_flags |= f; return m_flags; }
+	int  setf(int f, int mask)  { m_flags = (m_flags & ~mask) | (f & mask); return m_flags; }
+	void unsetf(int f)          { m_flags &= ~f; }
+	int  precision() const      { return m_prec; }
+	int  precision(int p)       { int o = m_prec; m_prec = p; return o; }
+	int  width() const          { return m_width; }
+	int  width(int w)           { int o = m_width; m_width = w; return o; }
+	char fill() const           { return m_fill; }
+	char fill(char c)           { char o = m_fill; m_fill = c; return o; }
+
+	/* Pad to the current width with the fill character, then clear the
+	   width.  The standard default alignment is right. */
+	ostream& __emit(const char* s, long n) {
+		if (m_width > n) {
+			long pad = m_width - n;
+			if (m_flags & __ios_left) {
+				write(s, n);
+				for (long i = 0; i < pad; i++) put(m_fill);
+			} else {
+				for (long i = 0; i < pad; i++) put(m_fill);
+				write(s, n);
+			}
+		} else {
+			write(s, n);
+		}
+		m_width = 0;
+		return *this;
+	}
+
+protected:
+	int  m_flags;
+	int  m_prec;
+	int  m_width;
+	char m_fill;
+
+public:
+	/* fmtflag constants, reachable as std::ios::xxx (ios == ostream here) */
+	static const int dec        = __ios_dec;
+	static const int oct        = __ios_oct;
+	static const int hex        = __ios_hex;
+	static const int scientific = __ios_sci;
+	static const int fixed      = __ios_fixed;
+	static const int showbase   = __ios_showbase;
+	static const int showpoint  = __ios_showpoint;
+	static const int showpos    = __ios_showpos;
+	static const int uppercase  = __ios_uppercase;
+	static const int boolalpha  = __ios_boolalpha;
+	static const int left       = __ios_left;
+	static const int right      = __ios_right;
+	static const int internal   = __ios_internal;
+	static const int skipws     = __ios_skipws;
+
+	/* openmode constants for <fstream> (matches std::__openmode values) */
+	static const int in     = 1;
+	static const int out    = 2;
+	static const int app    = 4;
+	static const int ate    = 8;
+	static const int trunc_ = 16;   /* trunc collides with nothing, but keep clear */
+	static const int binary = 32;
+};
+
+extern ostream cout;
+extern ostream cerr;
+extern ostream clog;
+
+/* --- manipulators: base field ------------------------------------- */
+inline ostream& dec(ostream& os)         { os.setf(__ios_dec, __ios_basefield);  return os; }
+inline ostream& hex(ostream& os)         { os.setf(__ios_hex, __ios_basefield);  return os; }
+inline ostream& oct(ostream& os)         { os.setf(__ios_oct, __ios_basefield);  return os; }
+inline ostream& fixed(ostream& os)       { os.setf(__ios_fixed, __ios_floatfield); return os; }
+inline ostream& scientific(ostream& os)  { os.setf(__ios_sci, __ios_floatfield);  return os; }
+
+/* --- manipulators: single flags ------------------------------------ */
+inline ostream& showpos(ostream& os)     { os.setf(__ios_showpos);   return os; }
+inline ostream& noshowpos(ostream& os)   { os.unsetf(__ios_showpos); return os; }
+inline ostream& showbase(ostream& os)    { os.setf(__ios_showbase);  return os; }
+inline ostream& noshowbase(ostream& os)  { os.unsetf(__ios_showbase); return os; }
+inline ostream& showpoint(ostream& os)   { os.setf(__ios_showpoint); return os; }
+inline ostream& noshowpoint(ostream& os) { os.unsetf(__ios_showpoint); return os; }
+inline ostream& uppercase(ostream& os)   { os.setf(__ios_uppercase); return os; }
+inline ostream& nouppercase(ostream& os) { os.unsetf(__ios_uppercase); return os; }
+inline ostream& boolalpha(ostream& os)   { os.setf(__ios_boolalpha); return os; }
+inline ostream& noboolalpha(ostream& os) { os.unsetf(__ios_boolalpha); return os; }
+inline ostream& left(ostream& os)        { os.setf(__ios_left, __ios_adjustfield); return os; }
+inline ostream& right(ostream& os)       { os.setf(__ios_right, __ios_adjustfield); return os; }
+inline ostream& internal(ostream& os)    { os.setf(__ios_internal, __ios_adjustfield); return os; }
+
+ostream& endl(ostream& os);
+ostream& flush(ostream& os);
+ostream& ends(ostream& os);
+
+class istream {
+public:
+	istream() : m_flags(__ios_dec | __ios_skipws), m_width(0) {}
+	virtual ~istream() {}
+
+	istream& operator>>(char& c);
+	istream& operator>>(signed char& c)     { char t = 0; *this >> t; c = (signed char)t; return *this; }
+	istream& operator>>(unsigned char& c)   { char t = 0; *this >> t; c = (unsigned char)t; return *this; }
+	istream& operator>>(char* s);
+	istream& operator>>(int& v);
+	istream& operator>>(unsigned int& v);
+	istream& operator>>(short& v)           { int t = 0; *this >> t; v = (short)t; return *this; }
+	istream& operator>>(unsigned short& v)  { unsigned int t = 0; *this >> t; v = (unsigned short)t; return *this; }
+	istream& operator>>(long& v)            { long long t = 0; *this >> t; v = (long)t; return *this; }
+	istream& operator>>(unsigned long& v)   { unsigned long long t = 0; *this >> t; v = (unsigned long)t; return *this; }
+	istream& operator>>(long long& v);
+	istream& operator>>(unsigned long long& v);
+	istream& operator>>(double& v);
+	istream& operator>>(float& v)           { double t = 0; *this >> t; v = (float)t; return *this; }
+	istream& operator>>(bool& v)            { int t = 0; *this >> t; v = (t != 0); return *this; }
+
+	istream& operator>>(istream& (*fn)(istream&)) { return fn(*this); }
+
+	/* Character source.  Console versions live in prizm_console.cpp; a
+	   stream buffer (<sstream>) overrides them to parse its string. */
+	virtual int  __read_char();
+	virtual void __read_line(char* buf, int max, char delim);
+	virtual void __skip_ws();
+
+	/* Whitespace-delimited token; returns length or -1 on failure. */
+	virtual int  __next_token(char* out, int max);
+
+	int  get() { return __read_char(); }
+	istream& get(char& c) {
+		int v = __read_char();
+		if (v < 0) { m_fail = 1; return *this; }
+		c = (char)v;
+		return *this;
+	}
+	istream& getline(char* s, int n, char delim = '\n') {
+		__read_line(s, n, delim);
+		return *this;
+	}
+	istream& ignore(int n = 1, int delim = -1) {
+		for (int i = 0; i < n; i++) {
+			int c = __read_char();
+			if (c < 0 || c == delim) break;
+		}
+		return *this;
+	}
+	int peek() { return __read_char(); }
+
+	bool fail() const { return m_fail != 0; }
+	bool good() const { return m_fail == 0; }
+	bool eof()  const { return m_eof != 0; }
+	void clear()      { m_fail = 0; m_eof = 0; }
+	void setstate(int f) { if (f & 1) m_fail = 1; if (f & 2) m_eof = 1; }
+
+	explicit operator bool() const { return m_fail == 0; }
+	bool operator!() const { return m_fail != 0; }
+
+	/* ios_base-ish state (subset) */
+	int  flags() const        { return m_flags; }
+	int  flags(int f)         { int o = m_flags; m_flags = f; return o; }
+	int  setf(int f, int mask){ m_flags = (m_flags & ~mask) | (f & mask); return m_flags; }
+	int  width() const        { return m_width; }
+	int  width(int w)         { int o = m_width; m_width = w; return o; }
+
+protected:
+	int m_flags;
+	int m_width;
+
+public:
+	int m_fail = 0;
+	int m_eof  = 0;
+};
+
+extern istream cin;
+
+/* basic_ios<char> is folded into the stream classes; give code that writes
+   std::ios::fixed / std::ios::hex something that resolves. */
+typedef ostream ios;
+
+inline istream& ws(istream& is) { is.__skip_ws(); return is; }
+istream& endl(istream& is);
+
+/* Stream operators for the shim string, defined here because they need both
+   the string and the stream to be complete types. */
+inline ostream& operator<<(ostream& os, const string& s) {
+	return os.__emit(s.c_str(), (long)s.size());
+}
+
+inline istream& operator>>(istream& is, string& s) {
+	char tmp[256];
+	is >> tmp;
+	s = tmp;
+	return is;
+}
+
+inline istream& getline(istream& is, string& s, char delim = '\n') {
+	char tmp[256];
+	is.getline(tmp, (int)sizeof(tmp), delim);
+	s = tmp;
+	return is;
+}
+
+}
+
+#endif

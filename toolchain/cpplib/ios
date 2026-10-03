@@ -1,0 +1,23 @@
+#ifndef PRIZM_CPPLIB_IOS
+#define PRIZM_CPPLIB_IOS
+
+/* Stream state re-exports.  The fmtflag constants and the state accessors
+   live on std::ostream / std::istream in <iostream>; this header provides the
+   ios typedef and re-exposes the flag machinery under one roof. */
+
+#include <iostream>
+
+namespace std {
+
+typedef ostream ios;   /* basic_ios<char> is folded into the stream classes */
+
+/* openmode / seekdir (used by <fstream>) */
+enum __openmode   { __in = 1, __out = 2, __app = 4, __ate = 8, __trunc = 16, __binary = 32 };
+enum __seekdir    { __beg = 0, __cur = 1, __end = 2 };
+
+/* iostate bits for setstate(): failbit = 1, eofbit = 2, badbit = 4 */
+enum __iostate    { __goodbit = 0, __failbit = 1, __eofbit = 2, __badbit = 4 };
+
+}
+
+#endif

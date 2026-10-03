@@ -1,0 +1,223 @@
+#ifndef PRIZM_CPPSHIM_FUNCTIONAL
+#define PRIZM_CPPSHIM_FUNCTIONAL
+
+/* <functional>.
+ *
+ * The comparator and arithmetic functors, unary_function / binary_function and
+ * hash are in __stl_bits, because the ordered containers need less<> before
+ * this header is ever included.  What is added here is what only user code
+ * wants: reference_wrapper and a working std::function.
+ */
+#include <__stl_bits>
+#include <type_traits>
+#include <new>
+#include <cstddef>   /* std::nullptr_t */
+
+namespace std {
+
+/* =====================================================================
+   reference_wrapper - a callable that stands for a reference
+   ===================================================================== */
+
+template<class T>
+class reference_wrapper {
+public:
+	typedef T type;
+
+	explicit reference_wrapper(T& t) : m_p(&t) {}
+
+	operator T&() const { return *m_p; }
+	T& get() const { return *m_p; }
+
+	template<class... Args>
+	auto operator()(Args&&... a) const
+	    -> decltype(__stl_declval<T&>()(forward<Args>(a)...)) {
+		return (*m_p)(forward<Args>(a)...);
+	}
+
+private:
+	T* m_p;
+};
+
+template<class T> inline reference_wrapper<T>       ref(T& t)  { return reference_wrapper<T>(t); }
+template<class T> inline reference_wrapper<const T> cref(const T& t) { return reference_wrapper<const T>(t); }
+template<class T> inline reference_wrapper<T>       ref(reference_wrapper<T> t) { return t; }
+
+/* =====================================================================
+   function
+
+   A type erased callable.  Real std::function has a small object buffer and
+   only reaches for the heap when the callable is too big for it; this one
+   always allocates, which costs a malloc per function object and keeps the
+   implementation short enough to be obviously correct.  Everything a console
+   program does with std::function - store a function pointer, a lambda, a
+   reference to a functor - works either way.
+
+   There are no exceptions, so calling an empty function goes to
+   prizm_stl_fatal instead of throwing bad_function_call.
+   ===================================================================== */
+
+template<class Signature> class function;
+
+template<class R, class... Args>
+class function<R(Args...)> {
+private:
+	struct __base {
+		virtual ~__base() {}
+		virtual R __call(Args... args) = 0;
+		virtual __base* __clone() const = 0;
+	};
+
+	template<class F>
+	struct __holder : __base {
+		F m_f;
+		explicit __holder(const F& f) : m_f(f) {}
+		R __call(Args... args) { return m_f(static_cast<Args&&>(args)...); }
+		__base* __clone() const { return new __holder(m_f); }
+	};
+
+	__base* m_p;
+
+	/* Stops the forwarding constructor from hijacking copy construction of an
+	   lvalue function<R(Args...)>, which would otherwise be an exact match. */
+	template<class F>
+	struct __is_self {
+		static const bool value = is_same<typename decay<F>::type,
+		                                  function<R(Args...)> >::value;
+	};
+
+	template<class F>
+	void __install(F f) {
+		delete m_p;
+		m_p = new __holder<F>(f);
+	}
+
+public:
+	typedef R result_type;
+
+	function() : m_p(0) {}
+	function(nullptr_t) : m_p(0) {}
+
+	template<class F, class = typename enable_if<!__is_self<F>::value>::type>
+	function(F f) : m_p(0) { __install(f); }
+
+	function(const function& o) : m_p(o.m_p ? o.m_p->__clone() : 0) {}
+
+	~function() { delete m_p; }
+
+	function& operator=(const function& o) {
+		if (this != &o) {
+			delete m_p;
+			m_p = o.m_p ? o.m_p->__clone() : 0;
+		}
+		return *this;
+	}
+
+	template<class F, class = typename enable_if<!__is_self<F>::value>::type>
+	function& operator=(F f) { __install(f); return *this; }
+
+	function& operator=(nullptr_t) { delete m_p; m_p = 0; return *this; }
+
+	R operator()(Args... args) const {
+		if (!m_p) {
+			__stl_fail("std::function: called while empty");
+			return R();
+		}
+		return m_p->__call(static_cast<Args&&>(args)...);
+	}
+
+	explicit operator bool() const { return m_p != 0; }
+	bool operator!() const { return m_p == 0; }
+
+	void swap(function& o) { __base* t = m_p; m_p = o.m_p; o.m_p = t; }
+};
+
+/* R() above only compiles when R is a value type.  For a void signature the
+   early return has to be spelled differently, so the two void cases get their
+   own specialisations that share everything else. */
+template<class... Args>
+class function<void(Args...)> {
+private:
+	struct __base {
+		virtual ~__base() {}
+		virtual void __call(Args... args) = 0;
+		virtual __base* __clone() const = 0;
+	};
+
+	template<class F>
+	struct __holder : __base {
+		F m_f;
+		explicit __holder(const F& f) : m_f(f) {}
+		void __call(Args... args) { m_f(static_cast<Args&&>(args)...); }
+		__base* __clone() const { return new __holder(m_f); }
+	};
+
+	__base* m_p;
+
+	template<class F>
+	struct __is_self {
+		static const bool value = is_same<typename decay<F>::type,
+		                                  function<void(Args...)> >::value;
+	};
+
+	template<class F>
+	void __install(F f) {
+		delete m_p;
+		m_p = new __holder<F>(f);
+	}
+
+public:
+	typedef void result_type;
+
+	function() : m_p(0) {}
+	function(nullptr_t) : m_p(0) {}
+
+	template<class F, class = typename enable_if<!__is_self<F>::value>::type>
+	function(F f) : m_p(0) { __install(f); }
+
+	function(const function& o) : m_p(o.m_p ? o.m_p->__clone() : 0) {}
+
+	~function() { delete m_p; }
+
+	function& operator=(const function& o) {
+		if (this != &o) {
+			delete m_p;
+			m_p = o.m_p ? o.m_p->__clone() : 0;
+		}
+		return *this;
+	}
+
+	template<class F, class = typename enable_if<!__is_self<F>::value>::type>
+	function& operator=(F f) { __install(f); return *this; }
+
+	function& operator=(nullptr_t) { delete m_p; m_p = 0; return *this; }
+
+	void operator()(Args... args) const {
+		if (!m_p) {
+			__stl_fail("std::function: called while empty");
+			return;
+		}
+		m_p->__call(static_cast<Args&&>(args)...);
+	}
+
+	explicit operator bool() const { return m_p != 0; }
+	bool operator!() const { return m_p == 0; }
+
+	void swap(function& o) { __base* t = m_p; m_p = o.m_p; o.m_p = t; }
+};
+
+template<class R, class... Args>
+inline void swap(function<R(Args...)>& a, function<R(Args...)>& b) { a.swap(b); }
+
+template<class R, class... Args>
+inline bool operator==(const function<R(Args...)>& f, nullptr_t) { return !f; }
+template<class R, class... Args>
+inline bool operator==(nullptr_t, const function<R(Args...)>& f) { return !f; }
+template<class R, class... Args>
+inline bool operator!=(const function<R(Args...)>& f, nullptr_t) { return (bool)f; }
+template<class R, class... Args>
+inline bool operator!=(nullptr_t, const function<R(Args...)>& f) { return (bool)f; }
+
+}  /* namespace std */
+
+#endif

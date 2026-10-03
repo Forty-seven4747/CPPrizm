@@ -1,0 +1,141 @@
+#ifndef PRIZM_CPPLIB_SSTREAM
+#define PRIZM_CPPLIB_SSTREAM
+
+/* Stream buffers over std::string.  The console <iostream> routes all output
+   through the virtual put/write/flush hooks and all input through the
+   virtual __next_token / __read_char / __read_line hooks, so a subclass only
+   has to override those to redirect the stream. */
+
+#include <iostream>
+#include <string>
+
+namespace std {
+
+class ostringstream : public ostream {
+public:
+	ostringstream() {}
+	explicit ostringstream(const string& s) : m_buf(s) {}
+
+	string str() const { return m_buf; }
+	void str(const string& s) { m_buf = s; }
+
+	ostream& put(char c) { m_buf.push_back(c); return *this; }
+	ostream& write(const char* s, long n) {
+		for (long i = 0; i < n; i++) m_buf.push_back(s[i]);
+		return *this;
+	}
+	ostream& flush() { return *this; }   /* no display refresh for buffers */
+
+private:
+	string m_buf;
+};
+
+class istringstream : public istream {
+public:
+	istringstream() : m_pos(0) {}
+	explicit istringstream(const string& s) : m_buf(s), m_pos(0) {}
+
+	string str() const { return m_buf; }
+	void str(const string& s) { m_buf = s; m_pos = 0; clear(); }
+
+	int __next_token(char* out, int max) {
+		while (m_pos < m_buf.size() && (m_buf[m_pos] == ' ' || m_buf[m_pos] == '\t' || m_buf[m_pos] == '\n' || m_buf[m_pos] == '\r'))
+			m_pos++;
+		int n = 0;
+		while (m_pos < m_buf.size() && n < max - 1) {
+			char c = m_buf[m_pos];
+			if (c == ' ' || c == '\t' || c == '\n' || c == '\r') break;
+			out[n++] = c;
+			m_pos++;
+		}
+		out[n] = 0;
+		if (n == 0) { m_eof = 1; return -1; }
+		return n;
+	}
+
+	int __read_char() {
+		if (m_pos >= m_buf.size()) { m_eof = 1; return -1; }
+		return (unsigned char)m_buf[m_pos++];
+	}
+
+	void __read_line(char* out, int max, char delim) {
+		int n = 0;
+		while (m_pos < m_buf.size() && m_buf[m_pos] != delim && n < max - 1)
+			out[n++] = m_buf[m_pos++];
+		out[n] = 0;
+		if (m_pos < m_buf.size() && m_buf[m_pos] == delim) m_pos++;
+		else if (m_pos >= m_buf.size()) m_eof = 1;
+	}
+
+	void __skip_ws() {
+		while (m_pos < m_buf.size() && (m_buf[m_pos] == ' ' || m_buf[m_pos] == '\t' || m_buf[m_pos] == '\n' || m_buf[m_pos] == '\r'))
+			m_pos++;
+	}
+
+private:
+	string m_buf;
+	size_t m_pos;
+};
+
+/* istream and ostream are unrelated bases here (the real basic_ios diamond is
+   not modeled), which is exactly what lets stringstream get both halves. */
+class stringstream : public istream, public ostream {
+public:
+	stringstream() : m_pos(0) {}
+	explicit stringstream(const string& s) : m_buf(s), m_pos(0) {}
+
+	string str() const { return m_buf; }
+
+	/* --- output side --- */
+	ostream& put(char c) { m_buf.push_back(c); return *this; }
+	ostream& write(const char* s, long n) {
+		for (long i = 0; i < n; i++) m_buf.push_back(s[i]);
+		return *this;
+	}
+	ostream& flush() { return *this; }
+
+	/* --- input side --- */
+	void str_in(const string& s) { m_buf = s; m_pos = 0; clear(); }
+
+	int __next_token(char* out, int max) {
+		while (m_pos < m_buf.size() && (m_buf[m_pos] == ' ' || m_buf[m_pos] == '\t' || m_buf[m_pos] == '\n' || m_buf[m_pos] == '\r'))
+			m_pos++;
+		int n = 0;
+		while (m_pos < m_buf.size() && n < max - 1) {
+			char c = m_buf[m_pos];
+			if (c == ' ' || c == '\t' || c == '\n' || c == '\r') break;
+			out[n++] = c;
+			m_pos++;
+		}
+		out[n] = 0;
+		if (n == 0) { m_eof = 1; return -1; }
+		return n;
+	}
+
+	int __read_char() {
+		if (m_pos >= m_buf.size()) { m_eof = 1; return -1; }
+		return (unsigned char)m_buf[m_pos++];
+	}
+
+	void __read_line(char* out, int max, char delim) {
+		int n = 0;
+		while (m_pos < m_buf.size() && m_buf[m_pos] != delim && n < max - 1)
+			out[n++] = m_buf[m_pos++];
+		out[n] = 0;
+		if (m_pos < m_buf.size() && m_buf[m_pos] == delim) m_pos++;
+		else if (m_pos >= m_buf.size()) m_eof = 1;
+	}
+
+	void __skip_ws() {
+		while (m_pos < m_buf.size() && (m_buf[m_pos] == ' ' || m_buf[m_pos] == '\t' || m_buf[m_pos] == '\n' || m_buf[m_pos] == '\r'))
+			m_pos++;
+	}
+
+private:
+	string m_buf;
+	size_t m_pos;
+};
+
+}
+
+#endif

@@ -1,0 +1,14 @@
+#ifndef PRIZM_CPPSHIM_CERRNO
+#define PRIZM_CPPSHIM_CERRNO
+
+/* <cerrno>.
+ *
+ * The SDK ships errno.h, so this is a wrapper.  Nothing can be re-exported
+ * into namespace std here: errno and every E* name are macros in newlib, and a
+ * using declaration cannot name a macro.  Including the header is what makes
+ * them visible, which is what the standard asks for anyway - the macros live
+ * at global scope in both spellings.
+ */
+#include <errno.h>
+
+#endif

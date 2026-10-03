@@ -1,0 +1,342 @@
+#ifndef PRIZM_STL_HASH_BITS
+#define PRIZM_STL_HASH_BITS
+
+/* ---------------------------------------------------------------------------
+   Shared machinery for the unordered containers: unordered_map, unordered_set,
+   unordered_multimap, unordered_multiset.
+
+   Separate chaining over a bucket array of singly linked lists.  A bucket's
+   list ends at a null pointer, so an iterator that runs off the end of its
+   bucket just scans forward for the next non-empty one; that makes the
+   iterator three words (container, bucket index, node) and makes a rehash a
+   plain walk over the buckets relinking nodes, with no second structure to
+   maintain.
+
+   Equal keys are kept adjacent inside their bucket - insert_equal links a
+   duplicate right after the first match it finds - so that equal_range can
+   return one contiguous range for the multi containers, which is the
+   guarantee the standard asks for and which a naive "prepend to bucket" does
+   not give.
+
+   The load factor limit is 1.0: when size reaches bucket_count the table
+   doubles and every node is relinked.  Iterators are invalidated by a rehash,
+   which the standard allows.  References are not invalidated, and are not
+   here either, because a node moves between buckets without ever moving in
+   memory.
+
+   Hashing comes from std::hash in __stl_bits, which specialises the integral
+   types, pointers and strings and falls back to a byte-wise FNV-1a for
+   anything else, so a user type with no hash overload still works, just more
+   slowly.
+   --------------------------------------------------------------------------- */
+
+#include <__stl_bits>
+#include <type_traits>
+#include <utility>
+#include <cstddef>
+
+namespace std {
+
+template<class V, class KeyOf, class Hash, class Eq>
+class __stl_hashtable {
+public:
+	struct node {
+		node* m_next;
+		V     m_v;
+
+		template<class U>
+		explicit node(U&& u) : m_next(0), m_v(static_cast<U&&>(u)) {}
+	};
+
+	/* ---- iterators --------------------------------------------------- */
+
+	template<class N, class Ref, class Ptr2>
+	class __iter {
+	public:
+		typedef V                    value_type;
+		typedef forward_iterator_tag iterator_category;
+		typedef ptrdiff_t            difference_type;
+		typedef Ptr2                 pointer;
+		typedef Ref                  reference;
+
+		__iter() : m_h(0), m_b(0), m_n(0) {}
+		__iter(const __stl_hashtable* h, size_t b, N* n) : m_h(h), m_b(b), m_n(n) {}
+
+		template<class N2, class R2, class P2> friend class __iter;
+		template<class N2, class R2, class P2>
+		__iter(const __iter<N2, R2, P2>& o) : m_h(o.m_h), m_b(o.m_b), m_n(o.m_n) {}
+
+		Ref operator*() const { return m_n->m_v; }
+		Ptr2 operator->() const { return &m_n->m_v; }
+
+		__iter& operator++() { m_n = m_h->__next(m_b, m_n); return *this; }
+		__iter operator++(int) { __iter t(*this); m_n = m_h->__next(m_b, m_n); return t; }
+
+		bool operator==(const __iter& o) const { return m_n == o.m_n; }
+		bool operator!=(const __iter& o) const { return m_n != o.m_n; }
+
+		N* __node() const { return m_n; }
+		size_t __bucket() const { return m_b; }
+
+	private:
+		const __stl_hashtable* m_h;
+		size_t m_b;
+		N* m_n;
+	};
+
+	typedef __iter<node, V&, V*>                   iterator;
+	typedef __iter<const node, const V&, const V*> const_iterator;
+
+	__stl_hashtable() : m_bkt(0), m_bkt_n(0), m_size(0), m_hash(), m_eq() {}
+	__stl_hashtable(size_t nb, const Hash& h, const Eq& e)
+	    : m_bkt(0), m_bkt_n(0), m_size(0), m_hash(h), m_eq(e) {
+		__reserve_buckets(nb ? nb : 8);
+	}
+	~__stl_hashtable() { __teardown(); }
+
+	bool   empty() const { return m_size == 0; }
+	size_t size()  const { return m_size; }
+
+	iterator begin() { return iterator(this, __first_bucket(), 0); }
+	iterator end()   { return iterator(this, m_bkt_n, 0); }
+	const_iterator begin() const { return const_iterator(this, __first_bucket(), 0); }
+	const_iterator end()   const { return const_iterator(this, m_bkt_n, 0); }
+
+	float load_factor() const {
+		return m_bkt_n ? (float)m_size / (float)m_bkt_n : 0.0f;
+	}
+	static float max_load_factor() { return 1.0f; }
+	size_t bucket_count() const { return m_bkt_n; }
+	size_t max_bucket_count() const { return (size_t)-1 / sizeof(node); }
+
+	/* ---- lookup ------------------------------------------------------ */
+
+	iterator find(const typename KeyOf::type& k) {
+		if (!m_bkt_n) return end();
+		size_t b = m_hash(k) % m_bkt_n;
+		for (node* n = m_bkt[b]; n; n = n->m_next)
+			if (m_eq(KeyOf()(n->m_v), k)) return iterator(this, b, n);
+		return end();
+	}
+	const_iterator find(const typename KeyOf::type& k) const {
+		if (!m_bkt_n) return const_iterator(this, m_bkt_n, 0);
+		size_t b = m_hash(k) % m_bkt_n;
+		for (const node* n = m_bkt[b]; n; n = n->m_next)
+			if (m_eq(KeyOf()(n->m_v), k)) return const_iterator(this, b, (node*)n);
+		return const_iterator(this, m_bkt_n, 0);
+	}
+
+	size_t count(const typename KeyOf::type& k) const {
+		if (!m_bkt_n) return 0;
+		size_t b = m_hash(k) % m_bkt_n;
+		size_t n = 0;
+		for (const node* p = m_bkt[b]; p; p = p->m_next)
+			if (m_eq(KeyOf()(p->m_v), k)) ++n;
+		return n;
+	}
+
+	pair<iterator, iterator> equal_range(const typename KeyOf::type& k) {
+		iterator a = find(k);
+		if (a == end()) return pair<iterator, iterator>(a, a);
+		/* Equal keys are adjacent in the bucket, so the run ends at the first
+		   node whose key differs, or at the end of the bucket - and advancing
+		   past a bucket end is what ++ already does. */
+		size_t b = a.__bucket();
+		node* n = a.__node()->m_next;
+		while (n && m_eq(KeyOf()(n->m_v), k)) n = n->m_next;
+		iterator e = iterator(this, b, n);
+		if (!n) ++e;
+		return pair<iterator, iterator>(a, e);
+	}
+	pair<const_iterator, const_iterator> equal_range(const typename KeyOf::type& k) const {
+		pair<iterator, iterator> r = const_cast<__stl_hashtable*>(this)->equal_range(k);
+		return pair<const_iterator, const_iterator>(r.first, r.second);
+	}
+
+	/* ---- insertion --------------------------------------------------- */
+
+	/* Refuses a duplicate; second is false and first points at the existing
+	   element. */
+	pair<iterator, bool> insert_unique(const V& v) {
+		iterator hit = find(KeyOf()(v));
+		if (hit != end()) return pair<iterator, bool>(hit, false);
+		return pair<iterator, bool>(__insert_always(v), true);
+	}
+	pair<iterator, bool> insert_unique(V&& v) {
+		iterator hit = find(KeyOf()(v));
+		if (hit != end()) return pair<iterator, bool>(hit, false);
+		return pair<iterator, bool>(__insert_always(static_cast<V&&>(v)), true);
+	}
+
+	/* Always inserts.  The duplicate is linked directly after the first
+	   matching node so that equal keys stay contiguous in their bucket. */
+	iterator insert_equal(const V& v) { return __insert_equal(v); }
+	iterator insert_equal(V&& v)      { return __insert_equal(static_cast<V&&>(v)); }
+
+	/* Hinted forms: the hint is ignored, which the standard permits. */
+	iterator insert_equal(iterator, const V& v) { return __insert_equal(v); }
+	pair<iterator, bool> insert_unique(iterator, const V& v) {
+		iterator hit = find(KeyOf()(v));
+		if (hit != end()) return pair<iterator, bool>(hit, false);
+		return pair<iterator, bool>(__insert_always(v), true);
+	}
+
+	/* ---- erase ------------------------------------------------------- */
+
+	void erase_at(iterator pos) { __erase_node(pos.__node()); }
+
+	size_t erase_key(const typename KeyOf::type& k) {
+		if (!m_bkt_n) return 0;
+		size_t b = m_hash(k) % m_bkt_n;
+		size_t n = 0;
+		node** pp = &m_bkt[b];
+		while (*pp) {
+			if (m_eq(KeyOf()((*pp)->m_v), k)) {
+				node* dead = *pp;
+				*pp = dead->m_next;
+				__stl_destroy(&dead->m_v);
+				__stl_free_bytes(dead);
+				--m_size;
+				++n;
+			} else {
+				pp = &(*pp)->m_next;
+			}
+		}
+		return n;
+	}
+
+	void clear() { __teardown(); }
+
+	void swap(__stl_hashtable& o) {
+		node** b = m_bkt; m_bkt = o.m_bkt; o.m_bkt = b;
+		size_t n = m_bkt_n; m_bkt_n = o.m_bkt_n; o.m_bkt_n = n;
+		n = m_size; m_size = o.m_size; o.m_size = n;
+		Hash h = m_hash; m_hash = o.m_hash; o.m_hash = h;
+		Eq e = m_eq; m_eq = o.m_eq; o.m_eq = e;
+	}
+
+	/* ---- rehashing --------------------------------------------------- */
+
+	void rehash(size_t want) {
+		if (want > m_bkt_n || !m_bkt) __reserve_buckets(want);
+	}
+	void reserve(size_t n) {
+		if (n > m_bkt_n) __reserve_buckets(n + 1);
+	}
+
+private:
+	node** m_bkt;    /* bucket heads; each bucket is a singly linked list */
+	size_t m_bkt_n;
+	size_t m_size;
+	Hash   m_hash;
+	Eq     m_eq;
+
+	/* The next node in iteration order: the rest of this bucket, then the
+	   first node of the next non-empty bucket.  `b` is updated in place, which
+	   is what lets operator++ carry the bucket index along. */
+	template<class NP>
+	NP* __next(size_t& b, NP* n) const {
+		if (n && n->m_next) return n->m_next;
+		for (size_t i = b + 1; i < m_bkt_n; i++)
+			if (m_bkt[i]) { b = i; return m_bkt[i]; }
+		b = m_bkt_n;
+		return 0;
+	}
+	size_t __first_bucket() const {
+		for (size_t i = 0; i < m_bkt_n; i++)
+			if (m_bkt[i]) return i;
+		return m_bkt_n;
+	}
+	size_t __bucket_of(const typename KeyOf::type& k) const {
+		return m_hash(k) % (m_bkt_n ? m_bkt_n : 1);
+	}
+
+	node* __alloc_node() {
+		if (m_size + 1 > m_bkt_n) __reserve_buckets(m_bkt_n ? m_bkt_n * 2 : 8);
+		node* n = (node*)__stl_alloc_bytes(sizeof(node));
+		if (!n) { __stl_fail("std::unordered_map/set: out of memory"); return 0; }
+		return n;
+	}
+
+	template<class U>
+	iterator __insert_always(U&& u) {
+		node* n = __alloc_node();
+		if (!n) return end();
+		__stl_construct(&n->m_v, static_cast<U&&>(u));
+		size_t b = __bucket_of(KeyOf()(n->m_v));
+		n->m_next = m_bkt[b];
+		m_bkt[b] = n;
+		++m_size;
+		return iterator(this, b, n);
+	}
+
+	template<class U>
+	iterator __insert_equal(U&& u) {
+		node* n = __alloc_node();
+		if (!n) return end();
+		__stl_construct(&n->m_v, static_cast<U&&>(u));
+		size_t b = __bucket_of(KeyOf()(n->m_v));
+		/* Link right after the first equal key, so duplicates stay together. */
+		node* first = 0;
+		for (node* p = m_bkt[b]; p; p = p->m_next)
+			if (m_eq(KeyOf()(p->m_v), KeyOf()(n->m_v))) { first = p; break; }
+		if (first) { n->m_next = first->m_next; first->m_next = n; }
+		else       { n->m_next = m_bkt[b];      m_bkt[b] = n; }
+		++m_size;
+		return iterator(this, b, n);
+	}
+
+	void __erase_node(node* n) {
+		if (!n || !m_bkt_n) return;
+		size_t b = __bucket_of(KeyOf()(n->m_v));
+		node** pp = &m_bkt[b];
+		while (*pp && *pp != n) pp = &(*pp)->m_next;
+		if (!*pp) return;
+		*pp = n->m_next;
+		__stl_destroy(&n->m_v);
+		__stl_free_bytes(n);
+		--m_size;
+	}
+
+	/* Rebuild the bucket array at `nb` slots, relinking every node.  The nodes
+	   stay put in memory, so references into them survive a rehash. */
+	void __reserve_buckets(size_t nb) {
+		if (nb < 8) nb = 8;
+		node** nbkt = (node**)__stl_alloc_bytes(nb * sizeof(node*));
+		if (!nbkt) { __stl_fail("std::unordered_map/set: out of memory"); return; }
+		for (size_t i = 0; i < nb; i++) nbkt[i] = 0;
+		for (size_t i = 0; m_bkt && i < m_bkt_n; i++) {
+			node* n = m_bkt[i];
+			while (n) {
+				node* nx = n->m_next;
+				size_t b = m_hash(KeyOf()(n->m_v)) % nb;
+				n->m_next = nbkt[b];
+				nbkt[b] = n;
+				n = nx;
+			}
+		}
+		if (m_bkt) __stl_free_bytes(m_bkt);
+		m_bkt = nbkt;
+		m_bkt_n = nb;
+	}
+
+	void __teardown() {
+		for (size_t i = 0; m_bkt && i < m_bkt_n; i++) {
+			node* n = m_bkt[i];
+			while (n) {
+				node* nx = n->m_next;
+				__stl_destroy(&n->m_v);
+				__stl_free_bytes(n);
+				n = nx;
+			}
+		}
+		if (m_bkt) __stl_free_bytes(m_bkt);
+		m_bkt = 0;
+		m_bkt_n = 0;
+		m_size = 0;
+	}
+};
+
+}  /* namespace std */
+
+#endif

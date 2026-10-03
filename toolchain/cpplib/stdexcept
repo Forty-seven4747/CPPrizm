@@ -1,0 +1,64 @@
+#ifndef PRIZM_CPPSHIM_STDEXCEPT
+#define PRIZM_CPPSHIM_STDEXCEPT
+
+/* <stdexcept>.
+ *
+ * These classes are declared with the standard constructors and they do store
+ * the message that was passed, so a program that builds one and prints what()
+ * gets the text it asked for.  What they cannot do is be thrown: the build uses
+ * -fno-exceptions.  In practice they are used to declare a pointer or a
+ * reference, or by a library header that names the type, and for that they are
+ * complete.
+ *
+ * There is no <typeinfo> partner (bad_cast, bad_typeid) because -fno-rtti
+ * means those operations do not exist either.
+ */
+#include <exception>
+#include <string>
+
+namespace std {
+
+class logic_error : public exception {
+public:
+	explicit logic_error(const char* s = "") : m_s(s ? s : "") {}
+	explicit logic_error(const string& s) : m_s(s) {}
+	virtual const char* what() const {
+		return m_s.empty() ? "std::logic_error" : m_s.c_str();
+	}
+protected:
+	string m_s;
+};
+
+class runtime_error : public exception {
+public:
+	explicit runtime_error(const char* s = "") : m_s(s ? s : "") {}
+	explicit runtime_error(const string& s) : m_s(s) {}
+	virtual const char* what() const {
+		return m_s.empty() ? "std::runtime_error" : m_s.c_str();
+	}
+protected:
+	string m_s;
+};
+
+#define PRIZM_STDEXCEPT_CLASS(Name, Base, Default)                       \
+	class Name : public Base {                                           \
+	public:                                                              \
+		explicit Name(const char* s = "") : Base(s) {}                    \
+		explicit Name(const string& s) : Base(s) {}                       \
+		virtual const char* what() const {                                \
+			return m_s.empty() ? Default : m_s.c_str();                   \
+		}                                                                 \
+	};
+
+PRIZM_STDEXCEPT_CLASS(domain_error,     logic_error,   "std::domain_error")
+PRIZM_STDEXCEPT_CLASS(invalid_argument, logic_error,   "std::invalid_argument")
+PRIZM_STDEXCEPT_CLASS(length_error,     logic_error,   "std::length_error")
+PRIZM_STDEXCEPT_CLASS(out_of_range,     logic_error,   "std::out_of_range")
+PRIZM_STDEXCEPT_CLASS(range_error,      runtime_error, "std::range_error")
+PRIZM_STDEXCEPT_CLASS(overflow_error,   runtime_error, "std::overflow_error")
+PRIZM_STDEXCEPT_CLASS(underflow_error,  runtime_error, "std::underflow_error")
+#undef PRIZM_STDEXCEPT_CLASS
+
+}  /* namespace std */
+
+#endif

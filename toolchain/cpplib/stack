@@ -1,0 +1,70 @@
+#ifndef PRIZM_CPPSHIM_STACK
+#define PRIZM_CPPSHIM_STACK
+
+/* <stack>.
+ *
+ * Pure adaptor: every operation is a one line call on the underlying
+ * container, so there is nothing to get wrong here.  The default container is
+ * deque, as in the standard - a vector would also work and costs the same,
+ * but deque keeps push_front honest in case someone swaps the container type
+ * out for their own.
+ */
+
+#include <__stl_bits>
+#include <deque>
+#include <vector>
+#include <list>
+#include <type_traits>
+
+namespace std {
+
+template<class T, class C = deque<T> >
+class stack {
+public:
+	typedef C                   container_type;
+	typedef typename C::value_type value_type;
+	typedef typename C::size_type  size_type;
+	typedef typename C::reference  reference;
+	typedef typename C::const_reference const_reference;
+
+	stack() {}
+	explicit stack(const C& c) : m_c(c) {}
+	explicit stack(C&& c) : m_c(static_cast<C&&>(c)) {}
+
+	/* Range constructor: anything with begin/end feeds push. */
+	template<class It, class = typename enable_if<!is_integral<It>::value>::type>
+	stack(It first, It last) { for (; first != last; ++first) m_c.push_back(*first); }
+
+	bool      empty() const { return m_c.empty(); }
+	size_type size()  const { return m_c.size(); }
+
+	reference       top()       { return m_c.back(); }
+	const_reference top() const { return m_c.back(); }
+
+	void push(const value_type& v) { m_c.push_back(v); }
+	void push(value_type&& v)      { m_c.push_back(static_cast<value_type&&>(v)); }
+
+	template<class... Args>
+	reference emplace(Args&&... args) { return m_c.emplace_back(static_cast<Args&&>(args)...); }
+
+	void pop() { m_c.pop_back(); }
+
+	void swap(stack& o) { m_c.swap(o.m_c); }
+
+	bool operator==(const stack& o) const { return m_c == o.m_c; }
+	bool operator!=(const stack& o) const { return m_c != o.m_c; }
+	bool operator< (const stack& o) const { return m_c <  o.m_c; }
+	bool operator> (const stack& o) const { return m_c >  o.m_c; }
+	bool operator<=(const stack& o) const { return m_c <= o.m_c; }
+	bool operator>=(const stack& o) const { return m_c >= o.m_c; }
+
+protected:
+	C m_c;
+};
+
+template<class T, class C>
+inline void swap(stack<T, C>& a, stack<T, C>& b) { a.swap(b); }
+
+}  /* namespace std */
+
+#endif

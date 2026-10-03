@@ -1,0 +1,462 @@
+#ifndef PRIZM_CPPSHIM_DEQUE
+#define PRIZM_CPPSHIM_DEQUE
+
+/* <deque>.
+ *
+ * A double ended queue built out of fixed size chunks, addressed by an array
+ * of chunk pointers.  That is the layout libstdc++ uses and it is the right
+ * one: push_front and push_back are O(1) amortised, a chunk is only touched
+ * when the queue actually reaches it, and random access is two divisions.
+ *
+ * Positions are counted in virtual element units, so the front of the deque
+ * can move backwards into a fresh chunk without shifting anything.  Element i
+ * lives in chunk (m_begin + i) / K at offset (m_begin + i) % K, and that one
+ * line is the whole address calculation.  m_begin starts a few chunks in, so
+ * a push_front on an empty deque has somewhere to go instead of underflowing.
+ *
+ * Iterators hold their deque plus the virtual position rather than a raw
+ * pointer into a chunk.  That makes operator+ trivial and lets the iterator
+ * survive a map regrow, which is what the standard's promise about deque
+ * insertions at the ends not invalidating references actually needs.
+ *
+ * The chunk pointer array is grown around the used span with padding at both
+ * ends, so neither push_front nor push_back has to regrow twice in a row.
+ *
+ * On allocation failure the deque is left as it was and the operation reports
+ * through prizm_stl_fatal, the same bargain every container here makes.
+ */
+
+#include <__stl_bits>
+#include <type_traits>
+#include <initializer_list>
+#include <new>
+#include <cstddef>
+
+namespace std {
+
+/* Elements per chunk, chosen so a chunk is roughly 256 bytes for most types:
+   big enough that the chunk pointer array is negligible, small enough that
+   allocating one at a time is cheap. */
+template<class T> struct __stl_deq_chunk {
+	static const size_t value =
+	    sizeof(T) >= 64 ?  4 :
+	    sizeof(T) >= 32 ?  8 :
+	    sizeof(T) >= 16 ? 16 :
+	    sizeof(T) >=  8 ? 32 : 64;
+};
+
+template<class T, class A = allocator<T> >
+class deque {
+public:
+	typedef T          value_type;
+	typedef A          allocator_type;
+	typedef size_t     size_type;
+	typedef ptrdiff_t  difference_type;
+	typedef T&         reference;
+	typedef const T&   const_reference;
+	typedef T*         pointer;
+	typedef const T*   const_pointer;
+
+	/* ---- iterators --------------------------------------------------- */
+
+	template<class D, class Ref, class Ptr2>
+	class __iter {
+	public:
+		typedef T                             value_type;
+		typedef random_access_iterator_tag    iterator_category;
+		typedef ptrdiff_t                     difference_type;
+		typedef Ptr2                          pointer;
+		typedef Ref                           reference;
+
+		__iter() : m_d(0), m_p(0) {}
+		__iter(D* d, size_t p) : m_d(d), m_p(p) {}
+
+		Ref operator*() const { return m_d->__at(m_p); }
+		Ref operator[](ptrdiff_t n) const { return m_d->__at((size_t)((ptrdiff_t)m_p + n)); }
+
+		__iter& operator++() { ++m_p; return *this; }
+		__iter operator++(int) { __iter t(*this); ++m_p; return t; }
+		__iter& operator--() { --m_p; return *this; }
+		__iter operator--(int) { __iter t(*this); --m_p; return t; }
+
+		__iter& operator+=(ptrdiff_t n) { m_p = (size_t)((ptrdiff_t)m_p + n); return *this; }
+		__iter& operator-=(ptrdiff_t n) { m_p = (size_t)((ptrdiff_t)m_p - n); return *this; }
+		__iter operator+(ptrdiff_t n) const { return __iter(m_d, (size_t)((ptrdiff_t)m_p + n)); }
+		__iter operator-(ptrdiff_t n) const { return __iter(m_d, (size_t)((ptrdiff_t)m_p - n)); }
+		ptrdiff_t operator-(const __iter& o) const { return (ptrdiff_t)m_p - (ptrdiff_t)o.m_p; }
+
+		bool operator==(const __iter& o) const { return m_p == o.m_p; }
+		bool operator!=(const __iter& o) const { return m_p != o.m_p; }
+		bool operator<(const __iter& o) const { return m_p < o.m_p; }
+		bool operator>(const __iter& o) const { return m_p > o.m_p; }
+		bool operator<=(const __iter& o) const { return m_p <= o.m_p; }
+		bool operator>=(const __iter& o) const { return m_p >= o.m_p; }
+
+	private:
+		friend deque;
+		D*     m_d;
+		size_t m_p;
+	};
+
+	typedef __iter<deque, T&, T*>                   iterator;
+	typedef __iter<const deque, const T&, const T*> const_iterator;
+	typedef std::reverse_iterator<iterator>         reverse_iterator;
+	typedef std::reverse_iterator<const_iterator>   const_reverse_iterator;
+
+	/* ---- construction ----------------------------------------------- */
+
+	deque() : m_map(0), m_map_lo(0), m_map_cap(0), m_begin(__origin()), m_size(0) {}
+
+	explicit deque(size_type n) : m_map(0), m_map_lo(0), m_map_cap(0), m_begin(__origin()), m_size(0) {
+		__fill(n, T());
+	}
+	deque(size_type n, const T& v) : m_map(0), m_map_lo(0), m_map_cap(0), m_begin(__origin()), m_size(0) {
+		__fill(n, v);
+	}
+
+	template<class It, class = typename enable_if<!is_integral<It>::value>::type>
+	deque(It first, It last) : m_map(0), m_map_lo(0), m_map_cap(0), m_begin(__origin()), m_size(0) {
+		for (; first != last; ++first) push_back(*first);
+	}
+
+	deque(const deque& o) : m_map(0), m_map_lo(0), m_map_cap(0), m_begin(__origin()), m_size(0) {
+		for (size_type i = 0; i < o.m_size; i++) push_back(o[i]);
+	}
+	deque(deque&& o)
+	    : m_map(o.m_map), m_map_lo(o.m_map_lo), m_map_cap(o.m_map_cap),
+	      m_begin(o.m_begin), m_size(o.m_size) {
+		o.m_map = 0; o.m_map_lo = 0; o.m_map_cap = 0; o.m_begin = __origin(); o.m_size = 0;
+	}
+
+	deque(std::initializer_list<T> il) : m_map(0), m_map_lo(0), m_map_cap(0), m_begin(__origin()), m_size(0) {
+		for (const T* p = il.begin(); p != il.end(); ++p) push_back(*p);
+	}
+
+	~deque() { __teardown(); }
+
+	deque& operator=(const deque& o) {
+		if (this != &o) { deque t(o); swap(t); }
+		return *this;
+	}
+	deque& operator=(deque&& o) {
+		if (this != &o) { deque t(static_cast<deque&&>(o)); swap(t); }
+		return *this;
+	}
+	deque& operator=(std::initializer_list<T> il) {
+		deque t(il); swap(t); return *this;
+	}
+
+	void assign(size_type n, const T& v) { deque t(n, v); swap(t); }
+	template<class It, class = typename enable_if<!is_integral<It>::value>::type>
+	void assign(It first, It last) { deque t(first, last); swap(t); }
+	void assign(std::initializer_list<T> il) { deque t(il); swap(t); }
+
+	allocator_type get_allocator() const { return allocator_type(); }
+
+	/* ---- element access --------------------------------------------- */
+
+	reference       operator[](size_type i)       { return __at(m_begin + i); }
+	const_reference operator[](size_type i) const { return __at(m_begin + i); }
+
+	reference at(size_type i) {
+		if (i >= m_size) { __stl_fail("std::deque::at out of range"); return __at(m_begin); }
+		return __at(m_begin + i);
+	}
+	const_reference at(size_type i) const {
+		if (i >= m_size) { __stl_fail("std::deque::at out of range"); return __at(m_begin); }
+		return __at(m_begin + i);
+	}
+
+	reference       front()       { return __at(m_begin); }
+	const_reference front() const { return __at(m_begin); }
+	reference       back()        { return __at(m_begin + m_size - 1); }
+	const_reference back()  const { return __at(m_begin + m_size - 1); }
+
+	/* ---- iteration -------------------------------------------------- */
+
+	iterator begin() { return iterator(this, m_begin); }
+	iterator end()   { return iterator(this, m_begin + m_size); }
+	const_iterator begin()  const { return const_iterator(this, m_begin); }
+	const_iterator end()    const { return const_iterator(this, m_begin + m_size); }
+	const_iterator cbegin() const { return const_iterator(this, m_begin); }
+	const_iterator cend()   const { return const_iterator(this, m_begin + m_size); }
+
+	reverse_iterator       rbegin()        { return reverse_iterator(end()); }
+	reverse_iterator       rend()          { return reverse_iterator(begin()); }
+	const_reverse_iterator rbegin()  const { return const_reverse_iterator(end()); }
+	const_reverse_iterator rend()    const { return const_reverse_iterator(begin()); }
+
+	/* ---- size ------------------------------------------------------- */
+
+	bool      empty() const { return m_size == 0; }
+	size_type size()  const { return m_size; }
+	size_type max_size() const { return (size_type)-1 / sizeof(T); }
+
+	/* ---- modifiers -------------------------------------------------- */
+
+	void clear() {
+		__destroy_all();
+		m_size = 0;
+		m_begin = __origin();
+	}
+
+	void push_back(const T& v) {
+		if (m_size == 0) m_begin = __origin();
+		__ensure_chunk(m_begin + m_size);
+		__stl_construct(__chunk_ptr(m_begin + m_size), v);
+		++m_size;
+	}
+	void push_back(T&& v) {
+		if (m_size == 0) m_begin = __origin();
+		__ensure_chunk(m_begin + m_size);
+		__stl_construct(__chunk_ptr(m_begin + m_size), static_cast<T&&>(v));
+		++m_size;
+	}
+	void push_front(const T& v) {
+		if (m_size == 0) m_begin = __origin();
+		__ensure_chunk(m_begin - 1);
+		__stl_construct(__chunk_ptr(m_begin - 1), v);
+		--m_begin;
+		++m_size;
+	}
+	void push_front(T&& v) {
+		if (m_size == 0) m_begin = __origin();
+		__ensure_chunk(m_begin - 1);
+		__stl_construct(__chunk_ptr(m_begin - 1), static_cast<T&&>(v));
+		--m_begin;
+		++m_size;
+	}
+
+	template<class... Args>
+	reference emplace_back(Args&&... args) {
+		if (m_size == 0) m_begin = __origin();
+		__ensure_chunk(m_begin + m_size);
+		__stl_construct(__chunk_ptr(m_begin + m_size), static_cast<Args&&>(args)...);
+		++m_size;
+		return back();
+	}
+	template<class... Args>
+	reference emplace_front(Args&&... args) {
+		if (m_size == 0) m_begin = __origin();
+		__ensure_chunk(m_begin - 1);
+		__stl_construct(__chunk_ptr(m_begin - 1), static_cast<Args&&>(args)...);
+		--m_begin;
+		++m_size;
+		return front();
+	}
+
+	void pop_back() {
+		if (!m_size) return;
+		__stl_destroy(__chunk_ptr(m_begin + m_size - 1));
+		--m_size;
+	}
+	void pop_front() {
+		if (!m_size) return;
+		__stl_destroy(__chunk_ptr(m_begin));
+		--m_size;
+		++m_begin;
+	}
+
+	void resize(size_type n) {
+		while (m_size > n) pop_back();
+		while (m_size < n) push_back(T());
+	}
+	void resize(size_type n, const T& v) {
+		while (m_size > n) pop_back();
+		while (m_size < n) push_back(v);
+	}
+
+	iterator insert(iterator pos, const T& v) {
+		size_type off = pos.m_p - m_begin;
+		T tmp(v);
+		__make_room_for_insert(off);
+		return __shift_insert(off, tmp);
+	}
+	iterator insert(iterator pos, T&& v) {
+		size_type off = pos.m_p - m_begin;
+		T tmp(static_cast<T&&>(v));
+		__make_room_for_insert(off);
+		return __shift_insert(off, tmp);
+	}
+	iterator insert(iterator pos, size_type n, const T& v) {
+		size_type off = pos.m_p - m_begin;
+		deque tmp(n, v);
+		return __insert_range(off, tmp);
+	}
+	template<class It, class = typename enable_if<!is_integral<It>::value>::type>
+	iterator insert(iterator pos, It first, It last) {
+		size_type off = pos.m_p - m_begin;
+		deque tmp(first, last);
+		return __insert_range(off, tmp);
+	}
+	iterator insert(iterator pos, std::initializer_list<T> il) {
+		size_type off = pos.m_p - m_begin;
+		deque tmp(il);
+		return __insert_range(off, tmp);
+	}
+
+	template<class... Args>
+	iterator emplace(iterator pos, Args&&... args) {
+		size_type off = pos.m_p - m_begin;
+		T tmp(static_cast<Args&&>(args)...);
+		__make_room_for_insert(off);
+		return __shift_insert(off, tmp);
+	}
+
+	iterator erase(iterator pos) { return erase(pos, pos + 1); }
+
+	iterator erase(iterator first, iterator last) {
+		size_type lo = first.m_p - m_begin;
+		size_type hi = last.m_p - m_begin;
+		size_type cnt = hi - lo;
+		size_type keep = m_size - hi;
+		/* Slide the tail down over the removed block, then pop what is left
+		   off the back.  Only the tail is moved, so this is O(keep). */
+		for (size_type i = 0; i < keep; i++)
+			__at(m_begin + lo + i) = static_cast<T&&>(__at(m_begin + hi + i));
+		for (size_type i = 0; i < cnt; i++) pop_back();
+		return iterator(this, m_begin + lo);
+	}
+
+	void swap(deque& o) {
+		T** a = m_map; m_map = o.m_map; o.m_map = a;
+		size_t b;
+		b = m_map_lo; m_map_lo = o.m_map_lo; o.m_map_lo = b;
+		b = m_map_cap; m_map_cap = o.m_map_cap; o.m_map_cap = b;
+		b = m_begin; m_begin = o.m_begin; o.m_begin = b;
+		b = m_size; m_size = o.m_size; o.m_size = b;
+	}
+
+private:
+	static const size_t K = __stl_deq_chunk<T>::value;
+
+	/* Where an empty deque parks its front: a few chunks in, so a push_front
+	   lands inside the map instead of underflowing a size_t. */
+	static size_t __origin() { return K * 4; }
+
+	T**    m_map;      /* chunk pointers for virtual chunks m_map_lo..      */
+	size_t m_map_lo;   /* virtual chunk index of m_map[0]                   */
+	size_t m_map_cap;  /* number of slots in m_map                          */
+	size_t m_begin;    /* virtual position of the first element             */
+	size_t m_size;     /* element count                                     */
+
+	/* Raw element access by virtual position.  The chunk must already exist;
+	   every path that calls this has called __ensure_chunk. */
+	T& __at(size_t p) const { return m_map[p / K - m_map_lo][p % K]; }
+
+	T* __chunk_ptr(size_t p) { return &m_map[p / K - m_map_lo][p % K]; }
+
+	/* Make sure chunk `c` exists.  On a regrow the new window is built around
+	   the used span plus the wanted chunk, padded at both ends. */
+	void __ensure_chunk(size_t c) {
+		if (m_map && c >= m_map_lo && c < m_map_lo + m_map_cap) {
+			if (!m_map[c - m_map_lo]) {
+				m_map[c - m_map_lo] = (T*)__stl_alloc_bytes(K * sizeof(T));
+				if (!m_map[c - m_map_lo]) __stl_fail("std::deque: out of memory");
+			}
+			return;
+		}
+		size_t lo_c = m_begin / K;
+		size_t hi_c = m_size ? (m_begin + m_size - 1) / K : lo_c;
+		size_t first = lo_c < c ? lo_c : c;
+		size_t last  = hi_c > c ? hi_c : c;
+		size_t span  = last - first + 1;
+		size_t pad   = span < 4 ? 4 : span / 2;
+		size_t new_lo = first > pad ? first - pad : 0;
+		size_t newcap = span + 2 * pad;
+
+		T** nm = (T**)__stl_alloc_bytes(newcap * sizeof(T*));
+		if (!nm) { __stl_fail("std::deque: out of memory"); return; }
+		for (size_t i = 0; i < newcap; i++) nm[i] = 0;
+		if (m_map) {
+			for (size_t i = 0; i < m_map_cap; i++) {
+				size_t vc = m_map_lo + i;
+				if (vc >= new_lo && vc < new_lo + newcap) nm[vc - new_lo] = m_map[i];
+			}
+			__stl_free_bytes(m_map);
+		}
+		m_map = nm;
+		m_map_lo = new_lo;
+		m_map_cap = newcap;
+		if (!m_map[c - m_map_lo]) {
+			m_map[c - m_map_lo] = (T*)__stl_alloc_bytes(K * sizeof(T));
+			if (!m_map[c - m_map_lo]) __stl_fail("std::deque: out of memory");
+		}
+	}
+
+	void __destroy_all() {
+		if (!m_map) return;
+		for (size_t i = 0; i < m_size; i++) __stl_destroy(__chunk_ptr(m_begin + i));
+	}
+	void __teardown() {
+		__destroy_all();
+		if (m_map) {
+			for (size_t i = 0; i < m_map_cap; i++)
+				if (m_map[i]) __stl_free_bytes(m_map[i]);
+			__stl_free_bytes(m_map);
+		}
+		m_map = 0; m_map_lo = 0; m_map_cap = 0; m_begin = __origin(); m_size = 0;
+	}
+
+	void __fill(size_type n, const T& v) {
+		for (size_type i = 0; i < n; i++) push_back(v);
+	}
+
+	/* Grow by one slot at the back; __shift_insert then slides the tail. */
+	void __make_room_for_insert(size_type) { push_back(T()); }
+
+	/* off is the element index to insert at.  The deque has already grown by
+	   one slot at the back, so when off is the last index the loop below does
+	   nothing and the value simply lands in the new slot. */
+	iterator __shift_insert(size_type off, const T& v) {
+		for (size_type i = m_size - 1; i > off; i--)
+			__at(m_begin + i) = static_cast<T&&>(__at(m_begin + i - 1));
+		__at(m_begin + off) = v;
+		return iterator(this, m_begin + off);
+	}
+
+	iterator __insert_range(size_type off, deque& src) {
+		size_type n = src.m_size;
+		if (n == 0) return iterator(this, m_begin + off);
+		for (size_type i = 0; i < n; i++) push_back(T());
+		for (size_type i = m_size; i-- > off + n; )
+			__at(m_begin + i) = static_cast<T&&>(__at(m_begin + i - n));
+		for (size_type i = 0; i < n; i++)
+			__at(m_begin + off + i) = static_cast<T&&>(__at(src.m_begin + i));
+		return iterator(this, m_begin + off);
+	}
+};
+
+/* ---- comparisons ------------------------------------------------------ */
+
+template<class T, class A>
+inline bool operator==(const deque<T, A>& a, const deque<T, A>& b) {
+	if (a.size() != b.size()) return false;
+	for (size_t i = 0; i < a.size(); i++)
+		if (!(a[i] == b[i])) return false;
+	return true;
+}
+template<class T, class A>
+inline bool operator!=(const deque<T, A>& a, const deque<T, A>& b) { return !(a == b); }
+template<class T, class A>
+inline bool operator<(const deque<T, A>& a, const deque<T, A>& b) {
+	size_t n = a.size() < b.size() ? a.size() : b.size();
+	for (size_t i = 0; i < n; i++) {
+		if (a[i] < b[i]) return true;
+		if (b[i] < a[i]) return false;
+	}
+	return a.size() < b.size();
+}
+template<class T, class A>
+inline bool operator>(const deque<T, A>& a, const deque<T, A>& b) { return b < a; }
+template<class T, class A>
+inline bool operator<=(const deque<T, A>& a, const deque<T, A>& b) { return !(b < a); }
+template<class T, class A>
+inline bool operator>=(const deque<T, A>& a, const deque<T, A>& b) { return !(a < b); }
+
+template<class T, class A>
+inline void swap(deque<T, A>& a, deque<T, A>& b) { a.swap(b); }
+
+}  /* namespace std */
+
+#endif

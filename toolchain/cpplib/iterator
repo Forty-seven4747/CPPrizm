@@ -1,0 +1,98 @@
+#ifndef PRIZM_CPPSHIM_ITERATOR
+#define PRIZM_CPPSHIM_ITERATOR
+
+/* <iterator>.
+ *
+ * The categories, iterator_traits, distance, advance, next, prev,
+ * reverse_iterator and the two insertion iterators are all in __stl_bits,
+ * because every container needs them.  What is left here is the free function
+ * interface - begin, end, size, data - which range based loops and newer code
+ * reach for, plus inserter().
+ */
+#include <__stl_bits>
+
+namespace std {
+
+/* ---- begin / end -------------------------------------------------- */
+
+template<class C>
+inline auto begin(C& c) -> decltype(c.begin()) { return c.begin(); }
+template<class C>
+inline auto begin(const C& c) -> decltype(c.begin()) { return c.begin(); }
+template<class C>
+inline auto end(C& c) -> decltype(c.end()) { return c.end(); }
+template<class C>
+inline auto end(const C& c) -> decltype(c.end()) { return c.end(); }
+
+template<class T, size_t N> inline T* begin(T (&a)[N]) { return a; }
+template<class T, size_t N> inline T* end(T (&a)[N]) { return a + N; }
+
+template<class C>
+inline auto cbegin(const C& c) -> decltype(c.begin()) { return c.begin(); }
+template<class C>
+inline auto cend(const C& c) -> decltype(c.end()) { return c.end(); }
+
+template<class C>
+inline auto rbegin(C& c) -> decltype(c.rbegin()) { return c.rbegin(); }
+template<class C>
+inline auto rbegin(const C& c) -> decltype(c.rbegin()) { return c.rbegin(); }
+template<class C>
+inline auto rend(C& c) -> decltype(c.rend()) { return c.rend(); }
+template<class C>
+inline auto rend(const C& c) -> decltype(c.rend()) { return c.rend(); }
+
+template<class T, size_t N>
+inline reverse_iterator<T*> rbegin(T (&a)[N]) { return reverse_iterator<T*>(a + N); }
+template<class T, size_t N>
+inline reverse_iterator<T*> rend(T (&a)[N]) { return reverse_iterator<T*>(a); }
+
+/* ---- size / data -------------------------------------------------- */
+
+template<class C>
+inline auto size(const C& c) -> decltype(c.size()) { return c.size(); }
+template<class T, size_t N> inline size_t size(const T (&)[N]) { return N; }
+
+template<class C>
+inline auto data(C& c) -> decltype(c.data()) { return c.data(); }
+template<class C>
+inline auto data(const C& c) -> decltype(c.data()) { return c.data(); }
+template<class T, size_t N> inline T* data(T (&a)[N]) { return a; }
+
+template<class C>
+inline auto empty(const C& c) -> decltype(c.empty()) { return c.empty(); }
+
+/* ---- inserter ----------------------------------------------------- */
+
+template<class Container>
+class insert_iterator {
+public:
+	typedef output_iterator_tag iterator_category;
+	typedef void                value_type;
+	typedef void                difference_type;
+	typedef void                pointer;
+	typedef void                reference;
+
+	insert_iterator(Container& c, typename Container::iterator it) : m_c(&c), m_it(it) {}
+
+	insert_iterator& operator=(const typename Container::value_type& v) {
+		m_it = m_c->insert(m_it, v);
+		++m_it;
+		return *this;
+	}
+	insert_iterator& operator*()     { return *this; }
+	insert_iterator& operator++()    { return *this; }
+	insert_iterator& operator++(int) { return *this; }
+
+protected:
+	Container* m_c;
+	typename Container::iterator m_it;
+};
+
+template<class Container>
+inline insert_iterator<Container> inserter(Container& c, typename Container::iterator it) {
+	return insert_iterator<Container>(c, it);
+}
+
+}  /* namespace std */
+
+#endif

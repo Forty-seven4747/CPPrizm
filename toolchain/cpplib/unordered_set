@@ -1,0 +1,247 @@
+#ifndef PRIZM_CPPSHIM_UNORDERED_SET
+#define PRIZM_CPPSHIM_UNORDERED_SET
+
+/* <unordered_set> and <unordered_multiset>.
+ *
+ * Same table as <unordered_map>, with the key as the value type, which is the
+ * whole difference - see the note there on bucket layout and rehashing.
+ */
+
+#include <__stl_bits>
+#include <__stl_hash_bits>
+#include <type_traits>
+#include <utility>
+#include <functional>
+#include <initializer_list>
+#include <cstddef>
+
+namespace std {
+
+template<class Key, class Hash = hash<Key>, class Eq = equal_to<Key>,
+         class A = allocator<Key> >
+class unordered_set {
+public:
+	typedef Key    key_type;
+	typedef Key    value_type;
+	typedef Hash   hasher;
+	typedef Eq     key_equal;
+	typedef A      allocator_type;
+	typedef size_t size_type;
+	typedef ptrdiff_t difference_type;
+	typedef value_type&       reference;
+	typedef const value_type& const_reference;
+	typedef typename A::pointer       pointer;
+	typedef typename A::const_pointer const_pointer;
+
+private:
+	struct __keyof {
+		typedef Key type;
+		const Key& operator()(const Key& k) const { return k; }
+	};
+	typedef __stl_hashtable<Key, __keyof, Hash, Eq> table;
+
+public:
+	typedef typename table::iterator       iterator;
+	typedef typename table::const_iterator const_iterator;
+
+	unordered_set() : m_h() {}
+	explicit unordered_set(size_type nb, const Hash& h = Hash(), const Eq& e = Eq())
+	    : m_h(nb, h, e) {}
+	template<class It>
+	unordered_set(It first, It last) : m_h() { for (; first != last; ++first) m_h.insert_unique(*first); }
+	template<class It>
+	unordered_set(It first, It last, size_type nb) : m_h(nb, Hash(), Eq()) {
+		for (; first != last; ++first) m_h.insert_unique(*first);
+	}
+	unordered_set(std::initializer_list<value_type> il) : m_h() {
+		for (const value_type* p = il.begin(); p != il.end(); ++p) m_h.insert_unique(*p);
+	}
+	unordered_set(const unordered_set& o) : m_h() { __copy_from(o); }
+	unordered_set(unordered_set&& o) : m_h() { m_h.swap(o.m_h); }
+	unordered_set& operator=(const unordered_set& o) {
+		if (this != &o) { unordered_set t(o); m_h.swap(t.m_h); }
+		return *this;
+	}
+	unordered_set& operator=(unordered_set&& o) {
+		if (this != &o) { unordered_set t(static_cast<unordered_set&&>(o)); m_h.swap(t.m_h); }
+		return *this;
+	}
+	unordered_set& operator=(std::initializer_list<value_type> il) {
+		unordered_set t(il); m_h.swap(t.m_h); return *this;
+	}
+	~unordered_set() {}
+
+	bool      empty() const { return m_h.empty(); }
+	size_type size()  const { return m_h.size(); }
+
+	iterator begin() { return m_h.begin(); }
+	iterator end()   { return m_h.end(); }
+	const_iterator begin()  const { return m_h.begin(); }
+	const_iterator end()    const { return m_h.end(); }
+	const_iterator cbegin() const { return m_h.begin(); }
+	const_iterator cend()   const { return m_h.end(); }
+
+	pair<iterator, bool> insert(const value_type& v) { return m_h.insert_unique(v); }
+	pair<iterator, bool> insert(value_type&& v) { return m_h.insert_unique(static_cast<value_type&&>(v)); }
+	iterator insert(iterator hint, const value_type& v) { return m_h.insert_unique(hint, v).first; }
+	template<class It>
+	void insert(It first, It last) { for (; first != last; ++first) m_h.insert_unique(*first); }
+	void insert(std::initializer_list<value_type> il) {
+		for (const value_type* p = il.begin(); p != il.end(); ++p) m_h.insert_unique(*p);
+	}
+
+	template<class... Args>
+	pair<iterator, bool> emplace(Args&&... args) {
+		value_type v(static_cast<Args&&>(args)...);
+		return m_h.insert_unique(static_cast<value_type&&>(v));
+	}
+
+	iterator erase(iterator pos) {
+		iterator nx = pos;
+		++nx;
+		m_h.erase_at(pos);
+		return nx;
+	}
+	size_type erase(const Key& k) { return m_h.erase_key(k); }
+	iterator erase(iterator first, iterator last) {
+		while (first != last) {
+			iterator nx = first;
+			++nx;
+			m_h.erase_at(first);
+			first = nx;
+		}
+		return last;
+	}
+
+	void clear() { m_h.clear(); }
+	void swap(unordered_set& o) { m_h.swap(o.m_h); }
+
+	iterator find(const Key& k) { return m_h.find(k); }
+	const_iterator find(const Key& k) const { return m_h.find(k); }
+	size_type count(const Key& k) const { return m_h.count(k); }
+	pair<iterator, iterator> equal_range(const Key& k) { return m_h.equal_range(k); }
+	pair<const_iterator, const_iterator> equal_range(const Key& k) const { return m_h.equal_range(k); }
+
+	float load_factor() const { return m_h.load_factor(); }
+	float max_load_factor() const { return m_h.max_load_factor(); }
+	size_type bucket_count() const { return m_h.bucket_count(); }
+	void rehash(size_type n) { m_h.rehash(n); }
+	void reserve(size_type n) { m_h.reserve(n); }
+
+	hasher hash_function() const { return hasher(); }
+	key_equal key_eq() const { return key_equal(); }
+
+private:
+	table m_h;
+	void __copy_from(const unordered_set& o) {
+		for (const_iterator it = o.begin(); it != o.end(); ++it) m_h.insert_equal(*it);
+	}
+};
+
+/* =====================================================================
+   unordered_multiset
+   ===================================================================== */
+
+template<class Key, class Hash = hash<Key>, class Eq = equal_to<Key>,
+         class A = allocator<Key> >
+class unordered_multiset {
+public:
+	typedef Key    key_type;
+	typedef Key    value_type;
+	typedef Hash   hasher;
+	typedef Eq     key_equal;
+	typedef A      allocator_type;
+	typedef size_t size_type;
+	typedef ptrdiff_t difference_type;
+	typedef value_type&       reference;
+	typedef const value_type& const_reference;
+
+private:
+	struct __keyof {
+		typedef Key type;
+		const Key& operator()(const Key& k) const { return k; }
+	};
+	typedef __stl_hashtable<Key, __keyof, Hash, Eq> table;
+
+public:
+	typedef typename table::iterator       iterator;
+	typedef typename table::const_iterator const_iterator;
+
+	unordered_multiset() : m_h() {}
+	explicit unordered_multiset(size_type nb, const Hash& h = Hash(), const Eq& e = Eq())
+	    : m_h(nb, h, e) {}
+	template<class It>
+	unordered_multiset(It first, It last) : m_h() { for (; first != last; ++first) m_h.insert_equal(*first); }
+	unordered_multiset(std::initializer_list<value_type> il) : m_h() {
+		for (const value_type* p = il.begin(); p != il.end(); ++p) m_h.insert_equal(*p);
+	}
+	unordered_multiset(const unordered_multiset& o) : m_h() { __copy_from(o); }
+	unordered_multiset(unordered_multiset&& o) : m_h() { m_h.swap(o.m_h); }
+	unordered_multiset& operator=(const unordered_multiset& o) {
+		if (this != &o) { unordered_multiset t(o); m_h.swap(t.m_h); }
+		return *this;
+	}
+	~unordered_multiset() {}
+
+	bool      empty() const { return m_h.empty(); }
+	size_type size()  const { return m_h.size(); }
+
+	iterator begin() { return m_h.begin(); }
+	iterator end()   { return m_h.end(); }
+	const_iterator begin()  const { return m_h.begin(); }
+	const_iterator end()    const { return m_h.end(); }
+
+	iterator insert(const value_type& v) { return m_h.insert_equal(v); }
+	iterator insert(value_type&& v) { return m_h.insert_equal(static_cast<value_type&&>(v)); }
+	template<class It>
+	void insert(It first, It last) { for (; first != last; ++first) m_h.insert_equal(*first); }
+	void insert(std::initializer_list<value_type> il) {
+		for (const value_type* p = il.begin(); p != il.end(); ++p) m_h.insert_equal(*p);
+	}
+
+	template<class... Args>
+	iterator emplace(Args&&... args) {
+		value_type v(static_cast<Args&&>(args)...);
+		return m_h.insert_equal(static_cast<value_type&&>(v));
+	}
+
+	iterator erase(iterator pos) {
+		iterator nx = pos;
+		++nx;
+		m_h.erase_at(pos);
+		return nx;
+	}
+	size_type erase(const Key& k) { return m_h.erase_key(k); }
+
+	void clear() { m_h.clear(); }
+	void swap(unordered_multiset& o) { m_h.swap(o.m_h); }
+
+	iterator find(const Key& k) { return m_h.find(k); }
+	const_iterator find(const Key& k) const { return m_h.find(k); }
+	size_type count(const Key& k) const { return m_h.count(k); }
+	pair<iterator, iterator> equal_range(const Key& k) { return m_h.equal_range(k); }
+	pair<const_iterator, const_iterator> equal_range(const Key& k) const { return m_h.equal_range(k); }
+
+	float load_factor() const { return m_h.load_factor(); }
+	size_type bucket_count() const { return m_h.bucket_count(); }
+	void rehash(size_type n) { m_h.rehash(n); }
+	void reserve(size_type n) { m_h.reserve(n); }
+
+	hasher hash_function() const { return hasher(); }
+	key_equal key_eq() const { return key_equal(); }
+
+private:
+	table m_h;
+	void __copy_from(const unordered_multiset& o) {
+		for (const_iterator it = o.begin(); it != o.end(); ++it) m_h.insert_equal(*it);
+	}
+};
+
+template<class Key, class Hash, class Eq, class A>
+inline void swap(unordered_set<Key, Hash, Eq, A>& a, unordered_set<Key, Hash, Eq, A>& b) { a.swap(b); }
+template<class Key, class Hash, class Eq, class A>
+inline void swap(unordered_multiset<Key, Hash, Eq, A>& a, unordered_multiset<Key, Hash, Eq, A>& b) { a.swap(b); }
+
+}  /* namespace std */
+
+#endif

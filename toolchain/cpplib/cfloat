@@ -1,0 +1,12 @@
+#ifndef PRIZM_CPPSHIM_CFLOAT
+#define PRIZM_CPPSHIM_CFLOAT
+
+/* <cfloat>.  GCC ships float.h, so the FLT_*, DBL_* and LDBL_* limits are all
+   there already.  On sh3eb long double is a double, so the LDBL_* values match
+   the DBL_* ones, which is what the header says too.
+
+   As with <cerrno>, the names are macros and cannot be pulled into namespace
+   std with a using declaration; including float.h is the whole job. */
+#include <float.h>
+
+#endif

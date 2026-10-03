@@ -1,0 +1,186 @@
+#ifndef PRIZM_CPPSHIM_NUMERIC
+#define PRIZM_CPPSHIM_NUMERIC
+
+/* <numeric>.
+ *
+ * The fold family plus the running/adjacent scans and the integer helpers.
+ * All of it is a single pass over iterators, so there is nothing clever here;
+ * the only judgement call is that reduce and transform_reduce default to
+ * plain left-to-right evaluation rather than the standard's unspecified
+ * grouping, which is the same thing on a single threaded target anyway.
+ */
+
+#include <__stl_bits>
+#include <type_traits>
+#include <cstddef>
+
+namespace std {
+
+/* ---- folds ----------------------------------------------------------- */
+
+template<class In, class T>
+inline T accumulate(In first, In last, T init) {
+	for (; first != last; ++first) init = init + *first;
+	return init;
+}
+template<class In, class T, class Op>
+inline T accumulate(In first, In last, T init, Op op) {
+	for (; first != last; ++first) init = op(init, *first);
+	return init;
+}
+
+/* reduce is the C++17 name.  With one thread the associativity question the
+   standard leaves open has one answer, so it is accumulate. */
+template<class In>
+inline typename iterator_traits<In>::value_type
+reduce(In first, In last) {
+	typedef typename iterator_traits<In>::value_type T;
+	T r = T();
+	for (; first != last; ++first) r = r + *first;
+	return r;
+}
+template<class In, class T>
+inline T reduce(In first, In last, T init) {
+	for (; first != last; ++first) init = init + *first;
+	return init;
+}
+template<class In, class T, class Op>
+inline T reduce(In first, In last, T init, Op op) {
+	for (; first != last; ++first) init = op(init, *first);
+	return init;
+}
+
+template<class In1, class In2, class T>
+inline T inner_product(In1 a, In1 alast, In2 b, T init) {
+	for (; a != alast; ++a, ++b) init = init + (*a * *b);
+	return init;
+}
+template<class In1, class In2, class T, class Op1, class Op2>
+inline T inner_product(In1 a, In1 alast, In2 b, T init, Op1 sum, Op2 mul) {
+	for (; a != alast; ++a, ++b) init = sum(init, mul(*a, *b));
+	return init;
+}
+
+template<class In1, class In2, class T, class Op1, class Op2>
+inline T transform_reduce(In1 a, In1 alast, In2 b, T init, Op1 sum, Op2 mul) {
+	for (; a != alast; ++a, ++b) init = sum(init, mul(*a, *b));
+	return init;
+}
+template<class In, class T, class BinOp, class UnOp>
+inline T transform_reduce(In first, In last, T init, BinOp bin, UnOp un) {
+	for (; first != last; ++first) init = bin(init, un(*first));
+	return init;
+}
+template<class In, class T>
+inline T transform_reduce(In first, In last, T init) {
+	for (; first != last; ++first) init = init + *first;
+	return init;
+}
+
+/* ---- running scans --------------------------------------------------- */
+
+/* partial_sum writes the running total; adjacent_difference writes the gaps.
+   Both allow the output iterator to be the input iterator, which is why the
+   value is held in a local before it is stored. */
+template<class In, class Out>
+inline Out partial_sum(In first, In last, Out out) {
+	if (first == last) return out;
+	typename iterator_traits<In>::value_type acc = *first;
+	*out = acc;
+	++out;
+	for (++first; first != last; ++first) {
+		acc = acc + *first;
+		*out = acc;
+		++out;
+	}
+	return out;
+}
+template<class In, class Out, class Op>
+inline Out partial_sum(In first, In last, Out out, Op op) {
+	if (first == last) return out;
+	typename iterator_traits<In>::value_type acc = *first;
+	*out = acc;
+	++out;
+	for (++first; first != last; ++first) {
+		acc = op(acc, *first);
+		*out = acc;
+		++out;
+	}
+	return out;
+}
+
+template<class In, class Out>
+inline Out adjacent_difference(In first, In last, Out out) {
+	if (first == last) return out;
+	typename iterator_traits<In>::value_type prev = *first;
+	*out = prev;
+	++out;
+	++first;
+	for (; first != last; ++first) {
+		typename iterator_traits<In>::value_type cur = *first;
+		*out = cur - prev;
+		++out;
+		prev = static_cast<typename iterator_traits<In>::value_type&&>(cur);
+	}
+	return out;
+}
+template<class In, class Out, class Op>
+inline Out adjacent_difference(In first, In last, Out out, Op op) {
+	if (first == last) return out;
+	typename iterator_traits<In>::value_type prev = *first;
+	*out = prev;
+	++out;
+	++first;
+	for (; first != last; ++first) {
+		typename iterator_traits<In>::value_type cur = *first;
+		*out = op(cur, prev);
+		++out;
+		prev = static_cast<typename iterator_traits<In>::value_type&&>(cur);
+	}
+	return out;
+}
+
+template<class Out, class Size, class T>
+inline Out iota_n(Out first, Size n, T value) {
+	for (; n > 0; --n, ++first, ++value) *first = value;
+	return first;
+}
+
+/* ---- integer helpers ------------------------------------------------- */
+
+/* Euclid, the way C++17 specifies it: both arguments are made non-negative
+   first, and gcd(0, 0) is 0. */
+template<class T>
+inline T gcd(T a, T b) {
+	if (a < T(0)) a = -a;
+	if (b < T(0)) b = -b;
+	while (b != T(0)) {
+		T t = a % b;
+		a = b;
+		b = t;
+	}
+	return a;
+}
+
+template<class T>
+inline T lcm(T a, T b) {
+	if (a == T(0) || b == T(0)) return T(0);
+	T g = gcd(a, b);
+	return (a / g) * b;
+}
+
+template<class T>
+inline T midpoint(T a, T b) {
+	return a + ((b - a) / 2);
+}
+/* Pointer form: the arithmetic above is not defined for pointers, so this
+   one walks the distance in ptrdiff_t and offsets from the lower address. */
+template<class T>
+inline T* midpoint(T* a, T* b) {
+	if (a > b) { T* t = a; a = b; b = t; }
+	return a + ((b - a) / 2);
+}
+
+}  /* namespace std */
+
+#endif

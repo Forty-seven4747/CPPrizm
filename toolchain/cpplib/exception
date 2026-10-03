@@ -1,0 +1,43 @@
+#ifndef PRIZM_CPPSHIM_EXCEPTION
+#define PRIZM_CPPSHIM_EXCEPTION
+
+/* <exception>.
+ *
+ * The build uses -fno-exceptions, so nothing here is ever actually thrown and
+ * `throw` is not even a legal expression.  These types exist so that programs
+ * can name them - a declaration, a pointer, a reference in a signature - and
+ * so that <stdexcept> has a base to build on.
+ */
+#include <__stl_bits>
+
+namespace std {
+
+class exception {
+public:
+	exception() {}
+	virtual ~exception() {}
+	virtual const char* what() const { return "std::exception"; }
+};
+
+class bad_exception : public exception {
+public:
+	virtual const char* what() const { return "std::bad_exception"; }
+};
+
+typedef void (*terminate_handler)();
+typedef void (*unexpected_handler)();
+
+inline terminate_handler set_terminate(terminate_handler) { return 0; }
+inline terminate_handler get_terminate() { return 0; }
+inline unexpected_handler set_unexpected(unexpected_handler) { return 0; }
+inline unexpected_handler get_unexpected() { return 0; }
+
+/* Nothing is ever thrown, so nothing can be escaping uncaught; these are here
+   because code sometimes calls them before giving up. */
+inline void terminate() { __stl_fail("std::terminate called"); }
+inline void unexpected() { __stl_fail("std::unexpected called"); }
+inline bool uncaught_exception() { return false; }
+
+}  /* namespace std */
+
+#endif

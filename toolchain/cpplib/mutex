@@ -1,0 +1,87 @@
+#ifndef PRIZM_CPPLIB_MUTEX
+#define PRIZM_CPPLIB_MUTEX
+
+/* Single-threaded platform: locking is a no-op that satisfies the standard
+   interface, so generic code (and code written with real threads in mind)
+   compiles and behaves deterministically here. */
+
+#include <atomic>
+
+namespace std {
+
+struct defer_lock_t    { explicit defer_lock_t() {} };
+struct try_to_lock_t   { explicit try_to_lock_t() {} };
+struct adopt_lock_t    { explicit adopt_lock_t() {} };
+
+const defer_lock_t  defer_lock  = defer_lock_t();
+const try_to_lock_t try_to_lock = try_to_lock_t();
+const adopt_lock_t  adopt_lock  = adopt_lock_t();
+
+class mutex {
+public:
+	mutex() {}
+	mutex(const mutex&) = delete;
+	mutex& operator=(const mutex&) = delete;
+
+	void lock() {}
+	bool try_lock() { return true; }
+	void unlock() {}
+};
+
+struct once_flag {
+	once_flag() : m_done(0) {}
+	once_flag(const once_flag&) = delete;
+	once_flag& operator=(const once_flag&) = delete;
+	char m_done;
+};
+
+template<class F, class... Args>
+void call_once(once_flag& f, F&& fn, Args&&... args) {
+	if (f.m_done) return;
+	f.m_done = 1;
+	fn(static_cast<Args&&>(args)...);
+}
+
+template<class M>
+class lock_guard {
+public:
+	explicit lock_guard(M& m) : m_m(m) { m_m.lock(); }
+	lock_guard(M& m, adopt_lock_t) : m_m(m) {}
+	~lock_guard() { m_m.unlock(); }
+	lock_guard(const lock_guard&) = delete;
+	lock_guard& operator=(const lock_guard&) = delete;
+private:
+	M& m_m;
+};
+
+template<class M>
+class unique_lock {
+public:
+	unique_lock() : m_m(0), m_owns(false) {}
+	explicit unique_lock(M& m) : m_m(&m), m_owns(true) { m_m->lock(); }
+	unique_lock(M& m, defer_lock_t) : m_m(&m), m_owns(false) {}
+	unique_lock(M& m, try_to_lock_t) : m_m(&m), m_owns(m.try_lock()) {}
+	unique_lock(M& m, adopt_lock_t) : m_m(&m), m_owns(true) {}
+	~unique_lock() { if (m_m && m_owns) m_m->unlock(); }
+
+	unique_lock(const unique_lock&) = delete;
+	unique_lock& operator=(const unique_lock&) = delete;
+
+	void lock()   { if (m_m) { m_m->lock(); m_owns = true; } }
+	bool try_lock() { return m_m ? (m_owns = m_m->try_lock()) : false; }
+	void unlock() { if (m_m && m_owns) { m_m->unlock(); m_owns = false; } }
+
+	void swap(unique_lock& o) { M* t = m_m; m_m = o.m_m; o.m_m = t; bool w = m_owns; m_owns = o.m_owns; o.m_owns = w; }
+
+	M*  mutex_ptr() const { return m_m; }
+	M*  release() { M* t = m_m; m_m = 0; m_owns = false; return t; }
+	bool owns_lock() const { return m_owns; }
+	explicit operator bool() const { return m_owns; }
+private:
+	M*   m_m;
+	bool m_owns;
+};
+
+}
+
+#endif

@@ -1,0 +1,47 @@
+#ifndef PRIZM_CPPSHIM_INITIALIZER_LIST
+#define PRIZM_CPPSHIM_INITIALIZER_LIST
+
+/* std::initializer_list.
+ *
+ * The compiler treats this type specially: it builds one whenever a braced
+ * list initialises a parameter of this type, so it has to be laid out exactly
+ * the way the ABI expects - two pointers, begin then size - and its
+ * constructor has to be private.  This is the same shape libstdc++ uses, and
+ * it is why `std::vector<int> v = {1, 2, 3};` and `return {1, 2};` work
+ * without libstdc++ being present.
+ */
+#include <stddef.h>
+
+namespace std {
+
+template<class T>
+class initializer_list {
+public:
+	typedef T              value_type;
+	typedef const T&       reference;
+	typedef const T&       const_reference;
+	typedef size_t         size_type;
+	typedef const T*       iterator;
+	typedef const T*       const_iterator;
+
+	constexpr initializer_list() : m_a(0), m_n(0) {}
+
+	constexpr size_type size() const { return m_n; }
+	constexpr const T*  begin() const { return m_a; }
+	constexpr const T*  end() const { return m_a + m_n; }
+
+private:
+	const T* m_a;
+	size_type m_n;
+
+	constexpr initializer_list(const T* a, size_type n) : m_a(a), m_n(n) {}
+};
+
+template<class T>
+constexpr const T* begin(initializer_list<T> il) { return il.begin(); }
+template<class T>
+constexpr const T* end(initializer_list<T> il) { return il.end(); }
+
+}  /* namespace std */
+
+#endif
