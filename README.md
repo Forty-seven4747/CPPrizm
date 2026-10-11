@@ -1,4 +1,4 @@
-# cpprizm - Casio Prizm C++ Add-in Builder
+# cpprizm — Casio Prizm C++ Add-in Builder
 
 Build a C++ source file into a `.g3a` add-in for the Casio Prizm (fx-CG10 / CG20 / CG50).
 
@@ -51,6 +51,7 @@ Double click **`cpprizm-gui.exe`**
 
 - Click **File...** and pick a `.cpp`, or **Folder...** and pick a project folder
 - Pick the console font and the console background (see [3.4](#34-console-font-and-background))
+- Type an add-in version if you want one other than `01.00`
 - Click **Build**
 - The log area shows the compiler output live, and tells you where the `.g3a` is
 - Shortcut: drag a `.cpp` file, or a project folder, onto the window
@@ -60,10 +61,12 @@ Double click **`cpprizm-gui.exe`**
 ```
 cpprizm.exe  <source.cpp | project folder>  [--log <out.txt>]
              [--font big|medium|small] [--bg white|black]
+             [--version <string>]
 ```
 
 - Exit code 0 means success, non-zero means failure
 - A bad `--font` or `--bg` value stops the build with an error, it does not quietly fall back to the default, so a typo in a batch file cannot go unnoticed
+- `--version` writes the string into the `.g3a` header. It is what the calculator shows in the main menu when you press OPTN on the add-in. 1 to 16 characters from letters, digits, dots, dashes and underscores, default `01.00`
 - Examples:
 
 ```bat
@@ -71,6 +74,7 @@ cpprizm.exe "D:\code\snake.cpp"
 cpprizm.exe "D:\code\snake"
 cpprizm.exe ..\src\mygame.cpp --log build.txt
 cpprizm.exe ..\src\mygame.cpp --font small --bg black
+cpprizm.exe ..\src\mygame.cpp --version 2.5.1-beta
 ```
 
 The graphical build also runs without a window:
@@ -79,7 +83,7 @@ The graphical build also runs without a window:
 cpprizm-gui.exe --build "D:\code\snake.cpp" --font small --bg black
 ```
 
-> The two options are compiled into the `.g3a`, they are not a menu on the calculator, so build again to change them.
+> The font, background and version are compiled into the `.g3a`, they are not a menu on the calculator, so build again to change them.
 
 ---
 
@@ -401,9 +405,14 @@ The SDK ships a C library and libfxcg, but no libstdc++ and no libm. The builder
 | Adaptors | `<stack>` `<queue>` `<priority_queue>` — priority_queue is a real heap |
 | Value types & memory | `<array>` `<bitset>` `<string>` `<string_view>` `<optional>` `<tuple>` `<utility>` `<memory>` — `unique_ptr`, `shared_ptr`, `weak_ptr`, `enable_shared_from_this` |
 | Algorithms | `<algorithm>` `<numeric>` — sort, stable_sort, nth_element, partial_sort, binary search, heap, set operations, permutations, accumulate, iota, gcd, lcm, midpoint |
-| Plumbing | `<iterator>` `<functional>` `<type_traits>` `<limits>` `<initializer_list>` |
+| Plumbing | `<iterator>` `<functional>` `<type_traits>` `<limits>` `<initializer_list>` — functional adds `std::function`, `bind` with `_1.._10`, `bind_front`, `mem_fn`, `not_fn` |
 | Streams | `<sstream>` — ostringstream / istringstream / stringstream; `<iomanip>` — setw, setfill, setprecision, setbase, setiosflags; `<ios>` — the fmtflag state |
-| Numbers & time | `<random>` — mt19937/mt19937_64, uniform / bernoulli / normal distributions, seed_seq; `<complex>` — abs, arg, conj, polar, exp, log, sqrt, pow; `<chrono>` — duration, time_point, clocks, `_h _min _s _ms _us _ns` literals |
+| Numbers & time | `<random>` — mt19937/mt19937_64, uniform / bernoulli / normal distributions, seed_seq; `<complex>` — abs, arg, conj, polar, exp, log, sqrt, pow; `<chrono>` — duration, time_point, clocks, `_h _min _s _ms _us _ns` literals; `<bit>` `<numbers>` `<ratio>` |
+| Containers extras | `<forward_list>` — insert_after / erase_after / splice_after / merge / sort; `<span>` — dynamic-extent views with deduction guides; `<valarray>` — element-wise arrays, slices, shift / cshift |
+| Type dispatch | `<variant>` `<any>` `<typeindex>` — no RTTI in the build, so `type_id<T>()` replaces `typeid(T)` and `any.type()` compares `type_index` values |
+| Errors & parsing | `<system_error>` — error_code / error_condition with generic and system categories; `<charconv>` — `to_chars` / `from_chars` for every integer type in bases 2-36 and a basic general format for double |
+| Thread family | `<thread>` `<condition_variable>` `<future>` `<shared_mutex>` `<stop_token>` `<latch>` — the standard surface with single-core semantics: a thread runs its callable inside the constructor, `async` runs synchronously and returns a ready future, waits never block |
+| C wrappers | `<cinttypes>` — imaxabs / imaxdiv / strtoimax / strtoumax; `<cwctype>` `<cuchar>`; `<csetjmp>` — real setjmp / longjmp via compiler builtins; `<csignal>` `<cfenv>` `<clocale>` — harmless stubs |
 | Concurrency & wide chars | `<atomic>` `<mutex>` — standard interface, no-ops on this single-threaded platform; `<cwchar>` — wcslen, wcscpy, wcscmp, wcsstr, wcstol, wcstod and the wmem family |
 | Files | `<fstream>` — compiling stub: the classes exist with the standard surface, `open()` always fails and every read sets failbit, so a portable program links but reports "no file" |
 
