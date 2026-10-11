@@ -1,0 +1,295 @@
+#ifndef PRIZM_CPPLIB_VARIANT
+#define PRIZM_CPPLIB_VARIANT
+
+/* C++17 variant on a raw aligned buffer with an index.  There are no
+   exceptions here, so a bad get() / visit() prints and stops through the
+   runtime fatal hook instead of throwing bad_variant_access, and the
+   valueless_by_exception state does not exist. */
+
+#include <cstddef>
+#include <cstdint>
+#include <type_traits>
+#include <utility>
+
+namespace std {
+
+class bad_variant_access {};
+
+constexpr size_t variant_npos = (size_t)-1;
+
+struct monostate {};
+
+inline bool operator==(monostate, monostate) { return true; }
+inline bool operator!=(monostate, monostate) { return false; }
+inline bool operator< (monostate, monostate) { return false; }
+inline bool operator> (monostate, monostate) { return false; }
+inline bool operator<=(monostate, monostate) { return true; }
+inline bool operator>=(monostate, monostate) { return true; }
+
+/* ---- max size / align over a pack --------------------------------- */
+
+template<size_t A, size_t B>
+struct __vmax2 : integral_constant<size_t, (A > B ? A : B)> {};
+
+template<class... Ts> struct __var_size;
+template<class T, class... Rest>
+struct __var_size<T, Rest...> : __vmax2<sizeof(T), __var_size<Rest...>::value> {};
+template<>
+struct __var_size<> : integral_constant<size_t, 0> {};
+
+template<class... Ts> struct __var_align;
+template<class T, class... Rest>
+struct __var_align<T, Rest...> : __vmax2<alignof(T), __var_align<Rest...>::value> {};
+template<>
+struct __var_align<> : integral_constant<size_t, 0> {};
+
+/* ---- index of a type in a pack (-1 when absent) -------------------- */
+
+template<class T, class... Ts> struct __var_index_of;
+template<class T, class T0, class... Rest>
+struct __var_index_of<T, T0, Rest...>
+    : integral_constant<int, is_same<T, T0>::value ? 0
+                             : (__var_index_of<T, Rest...>::value < 0
+                                 ? -1 : __var_index_of<T, Rest...>::value + 1)> {};
+template<class T>
+struct __var_index_of<T> : integral_constant<int, -1> {};
+
+/* ---- type at an index ---------------------------------------------- */
+
+template<int I, class... Ts> struct __var_at;
+template<int I, class T, class... Ts>
+struct __var_at<I, T, Ts...> { typedef typename __var_at<I - 1, Ts...>::type type; };
+template<class T, class... Ts>
+struct __var_at<0, T, Ts...> { typedef T type; };
+
+/* ---- indexed dispatch helpers (C++17 if constexpr recursion) -------- */
+
+template<int I, class T, class... Ts>
+void __var_destroy(int idx, void* p) {
+	if (idx == I) { ((T*)p)->~T(); return; }
+	if constexpr (sizeof...(Ts) > 0) __var_destroy<I + 1, Ts...>(idx, p);
+}
+
+template<int I, class T, class... Ts>
+void __var_copy(int idx, const void* s, void* d) {
+	if (idx == I) { new (d) T(*(const T*)s); return; }
+	if constexpr (sizeof...(Ts) > 0) __var_copy<I + 1, Ts...>(idx, s, d);
+}
+
+template<int I, class T, class... Ts>
+void __var_move(int idx, void* s, void* d) {
+	if (idx == I) { new (d) T(static_cast<T&&>(*(T*)s)); return; }
+	if constexpr (sizeof...(Ts) > 0) __var_move<I + 1, Ts...>(idx, s, d);
+}
+
+template<int I, class T, class... Ts>
+void __var_swap(int ia, int ib, void* a, void* b) {
+	if (ia == I && ib == I) {
+		swap(*(T*)a, *(T*)b);
+		return;
+	}
+	if constexpr (sizeof...(Ts) > 0) __var_swap<I + 1, Ts...>(ia, ib, a, b);
+}
+
+template<int I, class T, class... Ts>
+bool __var_eq(int ia, int ib, const void* a, const void* b) {
+	if (ia == I && ib == I) return *(const T*)a == *(const T*)b;
+	if constexpr (sizeof...(Ts) > 0) return __var_eq<I + 1, Ts...>(ia, ib, a, b);
+	return false;
+}
+
+template<int I, class T, class... Ts>
+bool __var_less(int ia, int ib, const void* a, const void* b) {
+	if (ia == I && ib == I) return *(const T*)a < *(const T*)b;
+	if constexpr (sizeof...(Ts) > 0) return __var_less<I + 1, Ts...>(ia, ib, a, b);
+	return ia < ib;
+}
+
+/* ---- variant -------------------------------------------------------- */
+
+template<class... Ts>
+class variant {
+	static_assert(sizeof...(Ts) > 0, "variant needs at least one alternative");
+
+public:
+	variant() : m_index(0), m_set(true) {
+		__stl_construct((typename __var_at<0, Ts...>::type*)m_buf);
+	}
+	variant(const variant& o) : m_index(o.m_index), m_set(o.m_set) {
+		__var_copy<0, Ts...>(o.m_index, o.m_buf, m_buf);
+	}
+	variant(variant&& o) : m_index(o.m_index), m_set(o.m_set) {
+		__var_move<0, Ts...>(o.m_index, o.m_buf, m_buf);
+	}
+
+	template<class U, class = typename enable_if<
+	    __var_index_of<typename decay<U>::type, Ts...>::value >= 0 &&
+	    !is_same<typename decay<U>::type, variant>::value>::type>
+	variant(U&& u) : m_index(0), m_set(true) {
+		constexpr int i = __var_index_of<typename decay<U>::type, Ts...>::value;
+		__stl_construct((typename __var_at<i, Ts...>::type*)m_buf, static_cast<U&&>(u));
+		m_index = i;
+	}
+
+	variant& operator=(const variant& o) {
+		if (this != &o) {
+			__destroy_current();
+			m_index = o.m_index;
+			m_set = o.m_set;
+			__var_copy<0, Ts...>(o.m_index, o.m_buf, m_buf);
+		}
+		return *this;
+	}
+	variant& operator=(variant&& o) {
+		if (this != &o) {
+			__destroy_current();
+			m_index = o.m_index;
+			m_set = o.m_set;
+			__var_move<0, Ts...>(o.m_index, o.m_buf, m_buf);
+		}
+		return *this;
+	}
+	template<class U, class = typename enable_if<
+	    __var_index_of<typename decay<U>::type, Ts...>::value >= 0 &&
+	    !is_same<typename decay<U>::type, variant>::value>::type>
+	variant& operator=(U&& u) {
+		constexpr int i = __var_index_of<typename decay<U>::type, Ts...>::value;
+		if (m_index == i && m_set) {
+			*(typename __var_at<i, Ts...>::type*)m_buf = static_cast<U&&>(u);
+		} else {
+			__destroy_current();
+			m_index = i;
+			m_set = true;
+			__stl_construct((typename __var_at<i, Ts...>::type*)m_buf, static_cast<U&&>(u));
+		}
+		return *this;
+	}
+
+	~variant() { __destroy_current(); }
+
+	int index() const { return m_set ? m_index : (int)variant_npos; }
+	bool valueless_by_exception() const { return !m_set; }
+
+	template<int I, class... Args>
+	typename __var_at<I, Ts...>::type& emplace(Args&&... args) {
+		__destroy_current();
+		m_index = I;
+		m_set = true;
+		typedef typename __var_at<I, Ts...>::type T;
+		__stl_construct((T*)m_buf, static_cast<Args&&>(args)...);
+		return *(T*)m_buf;
+	}
+	template<class T, class... Args>
+	T& emplace(Args&&... args) {
+		return emplace<__var_index_of<T, Ts...>::value>(static_cast<Args&&>(args)...);
+	}
+
+	void swap(variant& o) {
+		if (m_set && o.m_set) {
+			__var_swap<0, Ts...>(m_index, o.m_index, m_buf, o.m_buf);
+			int t = m_index; m_index = o.m_index; o.m_index = t;
+		} else {
+			variant tmp(static_cast<variant&&>(*this));
+			*this = static_cast<variant&&>(o);
+			o = tmp;
+		}
+	}
+
+	friend bool operator==(const variant& a, const variant& b) {
+		return a.m_set == b.m_set && a.m_index == b.m_index &&
+		       __var_eq<0, Ts...>(a.m_index, b.m_index, a.m_buf, b.m_buf);
+	}
+	friend bool operator!=(const variant& a, const variant& b) { return !(a == b); }
+	friend bool operator<(const variant& a, const variant& b) {
+		if (a.m_index != b.m_index || !a.m_set || !b.m_set) return a.index() < b.index();
+		return __var_less<0, Ts...>(a.m_index, b.m_index, a.m_buf, b.m_buf);
+	}
+	friend bool operator>(const variant& a, const variant& b)  { return b < a; }
+	friend bool operator<=(const variant& a, const variant& b) { return !(b < a); }
+	friend bool operator>=(const variant& a, const variant& b) { return !(a < b); }
+
+private:
+	template<class...> struct __dummy { typedef void type; };
+
+	alignas(Ts...) unsigned char m_buf[__var_size<Ts...>::value];
+	int  m_index;
+	bool m_set;
+
+	void __destroy_current() {
+		if (m_set) __var_destroy<0, Ts...>(m_index, m_buf);
+		m_set = false;
+	}
+};
+
+/* ---- access --------------------------------------------------------- */
+
+template<int I, class... Ts>
+typename __var_at<I, Ts...>::type& get(variant<Ts...>& v) {
+	typedef typename __var_at<I, Ts...>::type T;
+	if ((int)I != v.index()) __stl_fail("std::variant: bad variant get");
+	return *(T*)&v;
+}
+template<int I, class... Ts>
+const typename __var_at<I, Ts...>::type& get(const variant<Ts...>& v) {
+	typedef typename __var_at<I, Ts...>::type T;
+	if ((int)I != v.index()) __stl_fail("std::variant: bad variant get");
+	return *(const T*)&v;
+}
+template<class T, class... Ts>
+T& get(variant<Ts...>& v) { return get<__var_index_of<T, Ts...>::value>(v); }
+template<class T, class... Ts>
+const T& get(const variant<Ts...>& v) { return get<__var_index_of<T, Ts...>::value>(v); }
+
+template<int I, class... Ts>
+typename __var_at<I, Ts...>::type* get_if(variant<Ts...>* v) {
+	typedef typename __var_at<I, Ts...>::type T;
+	if (!v || (int)I != v->index()) return 0;
+	return (T*)v;
+}
+template<int I, class... Ts>
+const typename __var_at<I, Ts...>::type* get_if(const variant<Ts...>* v) {
+	typedef typename __var_at<I, Ts...>::type T;
+	if (!v || (int)I != v->index()) return 0;
+	return (const T*)v;
+}
+template<class T, class... Ts>
+T* get_if(variant<Ts...>* v) { return get_if<__var_index_of<T, Ts...>::value>(v); }
+template<class T, class... Ts>
+const T* get_if(const variant<Ts...>* v) { return get_if<__var_index_of<T, Ts...>::value>(v); }
+
+template<class T, class... Ts>
+bool holds_alternative(const variant<Ts...>& v) {
+	return v.index() == __var_index_of<T, Ts...>::value;
+}
+
+/* ---- visit ----------------------------------------------------------- */
+
+template<int I, class F, class T, class... Ts>
+auto __var_call(int idx, F&& f, void* p) -> decltype(f(*(T*)p)) {
+	if (idx == I) return f(*(T*)p);
+	if constexpr (sizeof...(Ts) > 0) return __var_call<I + 1, F, Ts...>(idx, static_cast<F&&>(f), p);
+	__stl_fail("std::variant: visit on valueless variant");
+	return f(*(T*)p);
+}
+
+template<class F, class... Ts>
+auto visit(F&& f, variant<Ts...>& v) -> decltype(f(*(typename __var_at<0, Ts...>::type*)0)) {
+	return __var_call<0, F, Ts...>(v.index(), static_cast<F&&>(f), &v);
+}
+
+/* Wraps the callable so each alternative is seen as const. */
+template<class F>
+struct __const_visit_fn {
+	F& f;
+	template<class T>
+	auto operator()(T& v) const -> decltype(f((const T&)v)) { return f((const T&)v); }
+};
+
+template<class F, class... Ts>
+auto visit(F&& f, const variant<Ts...>& v) -> decltype(f(*(typename __var_at<0, Ts...>::type*)0)) {
+	return visit(__const_visit_fn<F>{f}, const_cast<variant<Ts...>&>(v));
+}
+
+}
+
+#endif
