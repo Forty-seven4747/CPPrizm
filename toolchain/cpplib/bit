@@ -1,0 +1,101 @@
+#ifndef PRIZM_CPPLIB_BIT
+#define PRIZM_CPPLIB_BIT
+
+/* C++20 <bit>: builtin-backed bit utilities.  The compilers on this platform
+   expose the __builtin_popcount family for both 32 and 64 bit operands, so
+   the dispatch just picks the builtin wide enough for T. */
+
+#include <cstdint>
+#include <type_traits>
+
+namespace std {
+
+template<class T>
+inline constexpr bool __stl_is_unsigned =
+    is_integral<T>::value && is_unsigned<T>::value;
+
+template<class T>
+constexpr enable_if_t<__stl_is_unsigned<T>, int>
+popcount(T v) noexcept {
+	return sizeof(T) <= 4 ? __builtin_popcount((unsigned)v)
+	                      : __builtin_popcountll((unsigned long long)v);
+}
+
+template<class T>
+constexpr enable_if_t<__stl_is_unsigned<T>, int>
+countl_zero(T v) noexcept {
+	return sizeof(T) <= 4 ? (int)(v ? __builtin_clz((unsigned)v) : 32)
+	                      : (int)(v ? __builtin_clzll((unsigned long long)v) : 64);
+}
+
+template<class T>
+constexpr enable_if_t<__stl_is_unsigned<T>, int>
+countr_zero(T v) noexcept {
+	return sizeof(T) <= 4 ? (int)(v ? __builtin_ctz((unsigned)v) : 32)
+	                      : (int)(v ? __builtin_ctzll((unsigned long long)v) : 64);
+}
+
+template<class T>
+constexpr enable_if_t<__stl_is_unsigned<T>, int>
+countl_one(T v) noexcept { return countl_zero(T(~v)); }
+
+template<class T>
+constexpr enable_if_t<__stl_is_unsigned<T>, int>
+countr_one(T v) noexcept { return countr_zero(T(~v)); }
+
+template<class T>
+constexpr enable_if_t<__stl_is_unsigned<T>, int>
+bit_width(T v) noexcept { return sizeof(T) * 8 - countl_zero(v); }
+
+template<class T>
+constexpr enable_if_t<__stl_is_unsigned<T>, bool>
+has_single_bit(T v) noexcept { return v && !(v & (v - 1)); }
+
+template<class T>
+constexpr enable_if_t<__stl_is_unsigned<T>, T>
+bit_floor(T v) noexcept { return v ? T(T(1) << (bit_width(v) - 1)) : T(0); }
+
+template<class T>
+constexpr enable_if_t<__stl_is_unsigned<T>, T>
+bit_ceil(T v) noexcept {
+	if (v <= T(1)) return T(1);
+	return T(T(1) << bit_width(T(v - 1)));
+}
+
+template<class T>
+constexpr enable_if_t<__stl_is_unsigned<T>, T>
+rotl(T v, int s) noexcept {
+	const int w = int(sizeof(T) * 8);
+	if (!v) return v;
+	int r = s % w;
+	if (r < 0) r += w;
+	if (r == 0) return v;
+	return T((v << r) | (v >> (w - r)));
+}
+
+template<class T>
+constexpr enable_if_t<__stl_is_unsigned<T>, T>
+rotr(T v, int s) noexcept {
+	const int w = int(sizeof(T) * 8);
+	if (!v) return v;
+	int r = s % w;
+	if (r < 0) r += w;
+	if (r == 0) return v;
+	return T((v >> r) | (v << (w - r)));
+}
+
+inline constexpr uint16_t byteswap(uint16_t v) noexcept {
+	return uint16_t((v >> 8) | (v << 8));
+}
+inline constexpr uint32_t byteswap(uint32_t v) noexcept {
+	return ((v & 0x000000FFu) << 24) | ((v & 0x0000FF00u) << 8) |
+	       ((v >> 8) & 0x0000FF00u) | ((v >> 24) & 0x000000FFu);
+}
+inline constexpr uint64_t byteswap(uint64_t v) noexcept {
+	return (uint64_t)byteswap(uint32_t(v >> 32)) |
+	       ((uint64_t)byteswap(uint32_t(v)) << 32);
+}
+
+}
+
+#endif

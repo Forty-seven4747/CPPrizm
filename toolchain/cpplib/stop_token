@@ -1,0 +1,108 @@
+#ifndef PRIZM_CPPSHIM_STOP_TOKEN
+#define PRIZM_CPPSHIM_STOP_TOKEN
+
+/* <stop_token>, <stop_source>, <stop_callback>.  A plain shared flag:
+   request_stop flips it and every token observing the same source sees
+   it.  A callback constructed after the request fires immediately;
+   callbacks registered before it are never deferred, since nothing
+   could deliver them later on a single core. */
+
+#include <memory>
+#include <functional>
+
+namespace std {
+
+namespace __stop {
+
+struct __state {
+	bool m_stopped;
+	__state() : m_stopped(false) {}
+};
+
+}  /* namespace __stop */
+
+class stop_token {
+public:
+	stop_token() {}
+	stop_token(const stop_token&) = default;
+	stop_token(stop_token&&) = default;
+	stop_token& operator=(const stop_token&) = default;
+	stop_token& operator=(stop_token&&) = default;
+
+	bool stop_requested() const {
+		return m_s && m_s->m_stopped;
+	}
+	bool stop_possible() const {
+		return m_s != 0;
+	}
+	void swap(stop_token& o) {
+		shared_ptr<__stop::__state> t = m_s; m_s = o.m_s; o.m_s = t;
+	}
+	bool operator==(const stop_token& o) const { return m_s == o.m_s; }
+
+private:
+	friend class stop_source;
+	template<class F> friend class stop_callback;
+	explicit stop_token(shared_ptr<__stop::__state> s) : m_s(s) {}
+	shared_ptr<__stop::__state> m_s;
+};
+
+inline void swap(stop_token& a, stop_token& b) { a.swap(b); }
+
+class stop_source {
+public:
+	stop_source() : m_s(new __stop::__state()) {}
+	stop_source(const stop_source&) = default;
+	stop_source(stop_source&&) = default;
+	stop_source& operator=(const stop_source&) = default;
+	stop_source& operator=(stop_source&&) = default;
+
+	bool stop_requested() const { return m_s && m_s->m_stopped; }
+	bool stop_possible() const { return m_s != 0; }
+
+	bool request_stop() {
+		if (!m_s || m_s->m_stopped) return false;
+		m_s->m_stopped = true;
+		return true;
+	}
+
+	stop_token get_token() const { return stop_token(m_s); }
+	void swap(stop_source& o) {
+		shared_ptr<__stop::__state> t = m_s; m_s = o.m_s; o.m_s = t;
+	}
+	bool operator==(const stop_source& o) const { return m_s == o.m_s; }
+
+private:
+	shared_ptr<__stop::__state> m_s;
+};
+
+inline void swap(stop_source& a, stop_source& b) { a.swap(b); }
+
+template<class F>
+class stop_callback {
+public:
+	template<class C>
+	stop_callback(const stop_token& t, C&& c)
+	    : m_cb(forward<C>(c))
+	{
+		if (t.stop_possible()) m_s = t.m_s;
+		if (m_s && m_s->m_stopped) m_cb();
+	}
+	~stop_callback() {}
+
+	stop_callback(const stop_callback&) = delete;
+	stop_callback& operator=(const stop_callback&) = delete;
+
+private:
+	shared_ptr<__stop::__state> m_s;
+	F m_cb;
+};
+
+template<class F, class C>
+stop_callback<F> make_stop_callback(const stop_token& t, C&& c) {
+	return stop_callback<F>(t, forward<C>(c));
+}
+
+}  /* namespace std */
+
+#endif

@@ -1,0 +1,94 @@
+#ifndef PRIZM_CPPSHIM_THREAD
+#define PRIZM_CPPSHIM_THREAD
+
+/* <thread>.  One core, no scheduler: a thread runs its callable to
+   completion inside the constructor, so join()/detach() are no-ops and
+   the thread is never joinable afterwards.  sleep_for does nothing
+   because there is no clock to wait on. */
+
+#include <functional>
+#include <memory>
+#include <chrono>
+#include <cstddef>
+
+namespace std {
+
+class thread {
+public:
+	class id {
+	public:
+		id() : m_v(0) {}
+		bool operator==(const id& o) const { return m_v == o.m_v; }
+		bool operator!=(const id& o) const { return m_v != o.m_v; }
+		bool operator< (const id& o) const { return m_v <  o.m_v; }
+		bool operator<=(const id& o) const { return m_v <= o.m_v; }
+		bool operator> (const id& o) const { return m_v >  o.m_v; }
+		bool operator>=(const id& o) const { return m_v >= o.m_v; }
+	private:
+		friend class thread;
+		explicit id(unsigned v) : m_v(v) {}
+		unsigned m_v;
+	};
+
+	thread() : m_id(), m_done(true) {}
+
+	template<class F, class... Args>
+	explicit thread(F&& f, Args&&... args)
+	    : m_id(next_id()), m_done(false)
+	{
+		function<void()> run =
+		    bind(forward<F>(f), forward<Args>(args)...);
+		run();
+		m_done = true;
+	}
+
+	~thread() {}
+
+	thread(const thread&) = delete;
+	thread& operator=(const thread&) = delete;
+
+	thread(thread&& o) : m_id(o.m_id), m_done(o.m_done) {}
+	thread& operator=(thread&& o) {
+		m_id = o.m_id; m_done = o.m_done;
+		return *this;
+	}
+
+	bool      joinable() const { return !m_done; }
+	id        get_id() const { return m_id; }
+	void      join() {}
+	void      detach() {}
+	void      swap(thread& o) {
+		id t = m_id; m_id = o.m_id; o.m_id = t;
+		bool td = m_done; m_done = o.m_done; o.m_done = td;
+	}
+
+	static unsigned        hardware_concurrency() { return 1; }
+	static void            yield() {}
+
+private:
+	static unsigned next_id() {
+		static unsigned counter = 0;
+		return ++counter;
+	}
+
+	id  m_id;
+	bool m_done;
+};
+
+inline void swap(thread& a, thread& b) { a.swap(b); }
+
+namespace this_thread {
+
+inline thread::id get_id() { return thread::id(); }
+
+template<class Rep, class Period>
+inline void sleep_for(const chrono::duration<Rep, Period>&) {}
+
+template<class Clock, class Duration>
+inline void sleep_until(const chrono::time_point<Clock, Duration>&) {}
+
+}  /* namespace this_thread */
+
+}  /* namespace std */
+
+#endif

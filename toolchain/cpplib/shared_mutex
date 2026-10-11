@@ -1,0 +1,100 @@
+#ifndef PRIZM_CPPSHIM_SHARED_MUTEX
+#define PRIZM_CPPSHIM_SHARED_MUTEX
+
+/* <shared_mutex> and <shared_lock>.  With no other thread to contend
+   with, every lock and unlock is a no-op that just keeps the bookkeeping
+   straight. */
+
+#include <chrono>
+#include <mutex>
+
+namespace std {
+
+class shared_mutex {
+public:
+	shared_mutex() {}
+
+	shared_mutex(const shared_mutex&) = delete;
+	shared_mutex& operator=(const shared_mutex&) = delete;
+
+	void lock() {}
+	bool try_lock() { return true; }
+	void unlock() {}
+
+	void lock_shared() {}
+	bool try_lock_shared() { return true; }
+	void unlock_shared() {}
+};
+
+class shared_timed_mutex {
+public:
+	shared_timed_mutex() {}
+
+	shared_timed_mutex(const shared_timed_mutex&) = delete;
+	shared_timed_mutex& operator=(const shared_timed_mutex&) = delete;
+
+	void lock() {}
+	bool try_lock() { return true; }
+	void unlock() {}
+	void lock_shared() {}
+	bool try_lock_shared() { return true; }
+	void unlock_shared() {}
+
+	template<class Rep, class Period>
+	bool try_lock_for(const chrono::duration<Rep, Period>&) { return true; }
+	template<class Clock, class Duration>
+	bool try_lock_until(const chrono::time_point<Clock, Duration>&) { return true; }
+	template<class Rep, class Period>
+	bool try_lock_shared_for(const chrono::duration<Rep, Period>&) { return true; }
+	template<class Clock, class Duration>
+	bool try_lock_shared_until(const chrono::time_point<Clock, Duration>&) { return true; }
+};
+
+template<class Mutex>
+class shared_lock {
+public:
+	shared_lock() : m_m(0), m_owns(false) {}
+	explicit shared_lock(Mutex& m) : m_m(&m), m_owns(true) { m.lock_shared(); }
+	shared_lock(Mutex& m, defer_lock_t) : m_m(&m), m_owns(false) {}
+	shared_lock(Mutex& m, try_to_lock_t) : m_m(&m), m_owns(m.try_lock_shared()) {}
+	shared_lock(Mutex& m, adopt_lock_t) : m_m(&m), m_owns(true) {}
+
+	~shared_lock() { if (m_owns && m_m) m_m->unlock_shared(); }
+
+	shared_lock(const shared_lock&) = delete;
+	shared_lock& operator=(const shared_lock&) = delete;
+
+	shared_lock(shared_lock&& o) : m_m(o.m_m), m_owns(o.m_owns) {
+		o.m_m = 0; o.m_owns = false;
+	}
+	shared_lock& operator=(shared_lock&& o) {
+		if (m_owns && m_m) m_m->unlock_shared();
+		m_m = o.m_m; m_owns = o.m_owns;
+		o.m_m = 0; o.m_owns = false;
+		return *this;
+	}
+
+	void lock()        { if (m_m && !m_owns) { m_m->lock_shared(); m_owns = true; } }
+	bool try_lock()    { return m_m && !m_owns ? (m_owns = m_m->try_lock_shared()) : false; }
+	void unlock()      { if (m_m && m_owns) { m_m->unlock_shared(); m_owns = false; } }
+
+	void swap(shared_lock& o) {
+		Mutex* tm = m_m; m_m = o.m_m; o.m_m = tm;
+		bool to = m_owns; m_owns = o.m_owns; o.m_owns = to;
+	}
+
+	Mutex*  mutex() const  { return m_m; }
+	bool    owns_lock() const { return m_owns; }
+	explicit operator bool() const { return m_owns; }
+
+private:
+	Mutex* m_m;
+	bool   m_owns;
+};
+
+template<class Mutex>
+inline void swap(shared_lock<Mutex>& a, shared_lock<Mutex>& b) { a.swap(b); }
+
+}  /* namespace std */
+
+#endif

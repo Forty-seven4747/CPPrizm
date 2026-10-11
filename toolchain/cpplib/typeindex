@@ -1,0 +1,57 @@
+#ifndef PRIZM_CPPLIB_TYPEINDEX
+#define PRIZM_CPPLIB_TYPEINDEX
+
+/* type_index without RTTI.  typeid() is off in this build, so types are
+   identified by a per-instantiation static tag, exactly like <any> does.
+   Use std::type_id<T>() where standard code would write typeid(T). */
+
+#include <cstddef>
+#include <cstring>
+#include <functional>
+
+namespace std {
+
+class type_index;
+
+/* Unique address per T, shared across translation units in a single program
+   because static storage is one pool here. */
+template<class T>
+struct __type_tag {
+	static char m_tag;
+	static const void* id() { return &m_tag; }
+};
+template<class T> char __type_tag<T>::m_tag = 0;
+
+template<class T>
+type_index type_id();
+
+class type_index {
+public:
+	type_index() : m_id(0) {}
+	explicit type_index(const void* id) : m_id(id) {}
+
+	bool operator==(const type_index& o) const { return m_id == o.m_id; }
+	bool operator!=(const type_index& o) const { return m_id != o.m_id; }
+	bool operator< (const type_index& o) const { return m_id <  o.m_id; }
+	bool operator<=(const type_index& o) const { return m_id <= o.m_id; }
+	bool operator> (const type_index& o) const { return m_id >  o.m_id; }
+	bool operator>=(const type_index& o) const { return m_id >= o.m_id; }
+
+	size_t hash_code() const { return std::hash<const void*>()(m_id); }
+	const char* name() const { return "<type>"; }
+
+private:
+	const void* m_id;
+};
+
+template<class T>
+type_index type_id() { return type_index(__type_tag<T>::id()); }
+
+template<>
+struct hash<type_index> {
+	size_t operator()(const type_index& t) const { return t.hash_code(); }
+};
+
+}
+
+#endif

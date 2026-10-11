@@ -1,0 +1,16 @@
+#ifndef PRIZM_CPPSHIM_CSETJMP
+#define PRIZM_CPPSHIM_CSETJMP
+
+/* <csetjmp>.  Mapped onto the compiler builtins so no libc is needed.
+   The builtin form stores five words, always returns 1 after longjmp,
+   and the buffer must not be a local that went out of scope. */
+
+typedef void* jmp_buf[5];
+
+#define setjmp(env) __builtin_setjmp(env)
+
+inline void longjmp(jmp_buf env, int) {
+	__builtin_longjmp(env, 1);
+}
+
+#endif

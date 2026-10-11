@@ -230,6 +230,23 @@ inline time_t to_time_t(const time_point<steady_clock>& t) {
 	return (time_t)t.time_since_epoch().count();
 }
 
+/* everything is also reachable spelled std::chrono::... */
+namespace chrono {
+using ::std::__chrono::duration;
+using ::std::__chrono::duration_cast;
+using ::std::nanoseconds;
+using ::std::microseconds;
+using ::std::milliseconds;
+using ::std::seconds;
+using ::std::minutes;
+using ::std::hours;
+using ::std::time_point;
+using ::std::steady_clock;
+using ::std::system_clock;
+using ::std::high_resolution_clock;
+using ::std::to_time_t;
+}
+
 namespace chrono_literals {
 
 inline hours        operator""_h(unsigned long long v)  { return hours((long long)v); }

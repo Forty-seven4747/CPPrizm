@@ -1,0 +1,362 @@
+#ifndef PRIZM_CPPSHIM_CHARCONV
+#define PRIZM_CPPSHIM_CHARCONV
+
+/* <charconv>.  Full integer support in every base; double gets a basic
+   general-format converter built from plain integer arithmetic so no
+   floating point library is needed.  Unlike the standard version the
+   double conversion is not shortest-round-trip: it prints up to 9
+   significant fractional digits, or scientific notation outside the
+   fixed range. */
+
+#include <cstdint>
+#include <system_error>
+#include <type_traits>
+
+namespace std {
+
+struct to_chars_result {
+	char* ptr;
+	errc  ec;
+};
+
+struct from_chars_result {
+	const char* ptr;
+	errc        ec;
+};
+
+/* ---- integers to characters ----------------------------------------- */
+
+namespace __ccv {
+
+inline char __digit(unsigned v) {
+	return "0123456789abcdefghijklmnopqrstuvwxyz"[v];
+}
+
+/* writes digits right-to-left into last, returns first written */
+template<class T>
+inline char* __itoa_rev(T v, char* last, unsigned base) {
+	char* p = last;
+	bool neg = false;
+	if (v < 0) { neg = true; v = T() - v; }
+	typename make_unsigned<T>::type u = (typename make_unsigned<T>::type)v;
+	do {
+		*--p = __digit((unsigned)(u % base));
+		u /= base;
+	} while (u);
+	if (neg) *--p = '-';
+	return p;
+}
+
+template<class T>
+inline to_chars_result __to_chars(char* first, char* last, T value, int base) {
+	if (base < 2 || base > 36) {
+		return to_chars_result { last, errc::invalid_argument };
+	}
+	int room = (int)(last - first);
+	int need = 1;
+	if (value < 0) need++;
+	typename make_unsigned<T>::type u =
+	    (typename make_unsigned<T>::type)(value < 0 ? T() - value : value);
+	while (u >= (typename make_unsigned<T>::type)base) {
+		u /= base;
+		need++;
+	}
+	if (need > room) {
+		return to_chars_result { last, errc::value_too_large };
+	}
+	char* p = __itoa_rev(value, last, (unsigned)base);
+	return to_chars_result { p, errc() };
+}
+
+}  /* namespace __ccv */
+
+inline to_chars_result to_chars(char* first, char* last, bool value) {
+	if (first == last) return to_chars_result { last, errc::value_too_large };
+	*first = value ? '1' : '0';
+	return to_chars_result { first + 1, errc() };
+}
+
+inline to_chars_result to_chars(char* first, char* last, char value) {
+	return __ccv::__to_chars(first, last, (signed char)value, 10);
+}
+inline to_chars_result to_chars(char* first, char* last, signed char value) {
+	return __ccv::__to_chars(first, last, value, 10);
+}
+inline to_chars_result to_chars(char* first, char* last, unsigned char value) {
+	return __ccv::__to_chars(first, last, value, 10);
+}
+inline to_chars_result to_chars(char* first, char* last, short value) {
+	return __ccv::__to_chars(first, last, value, 10);
+}
+inline to_chars_result to_chars(char* first, char* last, unsigned short value) {
+	return __ccv::__to_chars(first, last, value, 10);
+}
+inline to_chars_result to_chars(char* first, char* last, int value) {
+	return __ccv::__to_chars(first, last, value, 10);
+}
+inline to_chars_result to_chars(char* first, char* last, unsigned value) {
+	return __ccv::__to_chars(first, last, value, 10);
+}
+inline to_chars_result to_chars(char* first, char* last, long value) {
+	return __ccv::__to_chars(first, last, value, 10);
+}
+inline to_chars_result to_chars(char* first, char* last, unsigned long value) {
+	return __ccv::__to_chars(first, last, value, 10);
+}
+inline to_chars_result to_chars(char* first, char* last, long long value) {
+	return __ccv::__to_chars(first, last, value, 10);
+}
+inline to_chars_result to_chars(char* first, char* last, unsigned long long value) {
+	return __ccv::__to_chars(first, last, value, 10);
+}
+
+template<class T>
+inline to_chars_result to_chars(char* first, char* last, T value, int base) {
+	return __ccv::__to_chars(first, last, value, base);
+}
+
+/* ---- floating point to characters, general format ------------------- */
+
+namespace __ccv {
+
+/* fixed range: 1e-5 <= |v| < 1e15 prints without an exponent */
+inline to_chars_result __dtoa(char* first, char* last, double value) {
+	if (first == last) return to_chars_result { last, errc::value_too_large };
+	bool neg = value < 0;
+	double v = neg ? -value : value;
+
+	if (v != v || v > 1.7976931348623157e308) {
+		/* nan or inf: spell it out */
+		const char* s = (v != v) ? "nan" : (neg ? "-inf" : "inf");
+		int n = (v != v) ? 3 : 4;
+		if (n > last - first) return to_chars_result { last, errc::value_too_large };
+		for (int i = 0; i < n; i++) first[i] = s[i];
+		return to_chars_result { first + n, errc() };
+	}
+
+	if (v == 0.0) {
+		if (last - first < 1 + (neg ? 1 : 0))
+		    return to_chars_result { last, errc::value_too_large };
+		if (neg) *first++ = '-';
+		*first = '0';
+		return to_chars_result { first + 1, errc() };
+	}
+
+	/* scale into [1, 10) while counting the decimal exponent */
+	int e = 0;
+	while (v >= 10.0) { v /= 10.0; e++; }
+	while (v < 1.0)   { v *= 10.0; e--; }
+
+	char digs[17];
+	const int ND = 15;             /* significant digits produced */
+	for (int i = 0; i < ND; i++) {
+		digs[i] = (char)('0' + (int)v);
+		v = (v - (double)(int)v) * 10.0;
+	}
+	/* round the last digit */
+	if ((int)v >= 5) {
+		int i = ND - 1;
+		while (i >= 0) {
+			if (digs[i] < '9') { digs[i]++; break; }
+			digs[i] = '0';
+			i--;
+		}
+		if (i < 0) { digs[0] = '1'; e++; }   /* 0.999.. rolled to 1.0 */
+	}
+	/* drop trailing zeros */
+	int len = ND;
+	while (len > 1 && digs[len - 1] == '0') len--;
+
+	/* decide fixed vs scientific */
+	bool sci = (e >= 15 || e < -5);
+	if (!sci) {
+		if (e >= 0) {
+			/* integer part = first e+1 digits */
+			int ip = e + 1;
+			int total = (neg ? 1 : 0) + ip + (len > ip ? 1 + (len - ip) : 0);
+			if (total > last - first)
+			    return to_chars_result { last, errc::value_too_large };
+			char* o = first;
+			if (neg) *o++ = '-';
+			for (int i = 0; i < ip; i++)
+			    *o++ = (i < len) ? digs[i] : '0';
+			if (len > ip) {
+				*o++ = '.';
+				for (int i = ip; i < len; i++) *o++ = digs[i];
+			}
+			return to_chars_result { o, errc() };
+		} else {
+			/* 0.000ddd */
+			int zeros = -e - 1;
+			int total = (neg ? 1 : 0) + 2 + zeros + len;
+			if (total > last - first)
+			    return to_chars_result { last, errc::value_too_large };
+			char* o = first;
+			if (neg) *o++ = '-';
+			*o++ = '0';
+			*o++ = '.';
+			for (int i = 0; i < zeros; i++) *o++ = '0';
+			for (int i = 0; i < len; i++) *o++ = digs[i];
+			return to_chars_result { o, errc() };
+		}
+	} else {
+		/* d.ddde[+-]XX */
+		char eb[8];
+		int en = 0;
+		unsigned ae = (e < 0) ? (unsigned)(-e) : (unsigned)e;
+		if (ae == 0) eb[en++] = '0';
+		while (ae) { eb[en++] = (char)('0' + ae % 10); ae /= 10; }
+		int total = (neg ? 1 : 0) + 1 + (len > 1 ? 1 + (len - 1) : 0) + 1 + 1
+		            + (e < 0 ? 1 : 1) + en;
+		if (total > last - first)
+		    return to_chars_result { last, errc::value_too_large };
+		char* o = first;
+		if (neg) *o++ = '-';
+		*o++ = digs[0];
+		if (len > 1) {
+			*o++ = '.';
+			for (int i = 1; i < len; i++) *o++ = digs[i];
+		}
+		*o++ = 'e';
+		*o++ = (e < 0) ? '-' : '+';
+		while (en) *o++ = eb[--en];
+		return to_chars_result { o, errc() };
+	}
+}
+
+}  /* namespace __ccv */
+
+inline to_chars_result to_chars(char* first, char* last, double value) {
+	return __ccv::__dtoa(first, last, value);
+}
+inline to_chars_result to_chars(char* first, char* last, float value) {
+	return __ccv::__dtoa(first, last, (double)value);
+}
+inline to_chars_result to_chars(char* first, char* last, long double value) {
+	return __ccv::__dtoa(first, last, (double)value);
+}
+
+/* ---- integers from characters ---------------------------------------- */
+
+namespace __ccv {
+
+template<class T>
+inline from_chars_result __from_chars(const char* first, const char* last,
+                                      T& value, int base) {
+	value = T();
+	if (base < 2 || base > 36)
+	    return from_chars_result { first, errc::invalid_argument };
+	const char* p = first;
+	bool neg = false;
+	if (p < last && *p == '-') { neg = true; p++; }
+	else if (p < last && *p == '+') { p++; }
+	if (p == last) return from_chars_result { first, errc::invalid_argument };
+
+	unsigned long long acc = 0;
+	bool any = false, ovf = false;
+	const unsigned long long LIMIT =
+	    (unsigned long long)((neg || (T)-1 < 0)
+	        ? (neg ? -(unsigned long long)(T)-1 - 1ull
+	               : (unsigned long long)(T)-1)
+	        : (unsigned long long)(T)-1);
+	while (p < last) {
+		int d;
+		char c = *p;
+		if (c >= '0' && c <= '9') d = c - '0';
+		else if (c >= 'a' && c <= 'z') d = c - 'a' + 10;
+		else if (c >= 'A' && c <= 'Z') d = c - 'A' + 10;
+		else break;
+		if ((unsigned)d >= (unsigned)base) break;
+		any = true;
+		if (!ovf) {
+			if (acc > (LIMIT - (unsigned)d) / (unsigned long long)base) ovf = true;
+			else acc = acc * (unsigned long long)base + (unsigned)d;
+		}
+		p++;
+	}
+	if (!any) return from_chars_result { first, errc::invalid_argument };
+	if (ovf)  return from_chars_result { p, errc::result_out_of_range };
+	value = neg ? (T)(0 - acc) : (T)acc;
+	return from_chars_result { p, errc() };
+}
+
+}  /* namespace __ccv */
+
+template<class T>
+inline from_chars_result from_chars(const char* first, const char* last,
+                                    T& value, int base = 10) {
+	return __ccv::__from_chars(first, last, value, base);
+}
+
+/* ---- floating point from characters ----------------------------------- */
+
+namespace __ccv {
+
+inline from_chars_result __strtof(const char* first, const char* last,
+                                  double& value) {
+	value = 0.0;
+	const char* p = first;
+	bool neg = false;
+	if (p < last && *p == '-') { neg = true; p++; }
+	else if (p < last && *p == '+') { p++; }
+
+	bool any = false;
+	double acc = 0.0;
+	while (p < last && *p >= '0' && *p <= '9') {
+		acc = acc * 10.0 + (*p - '0');
+		p++; any = true;
+	}
+	if (p < last && *p == '.') {
+		const char* q = p + 1;
+		double frac = 0.0, scale = 0.1;
+		while (q < last && *q >= '0' && *q <= '9') {
+			frac += (*q - '0') * scale;
+			scale *= 0.1;
+			q++; any = true;
+		}
+		if (q != p + 1) { acc += frac; p = q; }
+	}
+	if (!any) return from_chars_result { first, errc::invalid_argument };
+
+	int esign = 1, eval = 0;
+	bool eany = false;
+	if (p < last && (*p == 'e' || *p == 'E')) {
+		const char* q = p + 1;
+		if (q < last && *q == '+') q++;
+		else if (q < last && *q == '-') { esign = -1; q++; }
+		while (q < last && *q >= '0' && *q <= '9') {
+			eval = eval * 10 + (*q - '0');
+			if (eval > 400) eval = 400;
+			q++; eany = true;
+		}
+		if (eany) p = q;
+		else esign = 1;
+		eval *= esign;
+	}
+
+	double r = acc;
+	while (eval > 0 && r < 1e300) { r *= 10.0; eval--; }
+	if (eval > 0) r = 1.7976931348623157e308;
+	while (eval < 0 && r > 1e-300) { r *= 0.1; eval++; }
+	if (eval < 0) r = 0.0;
+	value = neg ? -r : r;
+	return from_chars_result { p, errc() };
+}
+
+}  /* namespace __ccv */
+
+inline from_chars_result from_chars(const char* first, const char* last,
+                                    double& value) {
+	return __ccv::__strtof(first, last, value);
+}
+inline from_chars_result from_chars(const char* first, const char* last,
+                                    float& value) {
+	double d = 0;
+	from_chars_result r = __ccv::__strtof(first, last, d);
+	value = (float)d;
+	return r;
+}
+
+}  /* namespace std */
+
+#endif

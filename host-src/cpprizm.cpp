@@ -46,7 +46,7 @@ static int g_conBg = 0;
 
 /* Version string written into the .g3a header, shown in the calculator main
    menu.  Baked in at build time like the console appearance. */
-static std::wstring g_g3aVersion = L"1.00";
+static std::wstring g_g3aVersion = L"01.00";
 
 /* Set by the option parser when a switch has a bad or missing value, so a typo
    fails the build instead of quietly falling back to the default. */
@@ -915,7 +915,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 			WS_CHILD | WS_VISIBLE, x, y + 3, 100, 20, hwnd, NULL, g_hInst, NULL);
 		SendMessageW(h, WM_SETFONT, (WPARAM)g_hFontUI, TRUE);
 
-		g_hEditVer = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"1.00",
+		g_hEditVer = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"01.00",
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
 			x + 104, y, 110, 24, hwnd, (HMENU)IDC_EDIT_VER, g_hInst, NULL);
 		SendMessageW(g_hEditVer, WM_SETFONT, (WPARAM)g_hFontUI, TRUE);

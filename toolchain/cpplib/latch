@@ -1,0 +1,74 @@
+#ifndef PRIZM_CPPSHIM_LATCH
+#define PRIZM_CPPSHIM_LATCH
+
+/* <latch> and <barrier> and <counting_semaphore>.  Single thread, so
+   wait() returns as soon as the counter allows and arrive_and_wait
+   completes the phase immediately. */
+
+#include <cstddef>
+
+namespace std {
+
+class latch {
+public:
+	explicit latch(ptrdiff_t expected) : m_cnt(expected < 0 ? 0 : expected) {}
+
+	latch(const latch&) = delete;
+	latch& operator=(const latch&) = delete;
+
+	void count_down(ptrdiff_t n = 1) {
+		m_cnt -= n;
+		if (m_cnt < 0) m_cnt = 0;
+	}
+	bool try_wait() const { return m_cnt == 0; }
+	void wait() const {}
+	void arrive_and_wait(ptrdiff_t n = 1) { count_down(n); }
+
+	static constexpr ptrdiff_t max() { return 0x7FFFFFFF; }
+
+private:
+	ptrdiff_t m_cnt;
+};
+
+class barrier {
+public:
+	explicit barrier(ptrdiff_t expected) : m_expected(expected) {}
+	barrier(const barrier&) = delete;
+	barrier& operator=(const barrier&) = delete;
+
+	void arrive_and_wait() {}
+	void arrive_and_drop() {}
+
+	static constexpr ptrdiff_t max() { return 0x7FFFFFFF; }
+
+private:
+	ptrdiff_t m_expected;
+};
+
+template<ptrdiff_t LeastMax = 0x7FFFFFFF>
+class counting_semaphore {
+public:
+	counting_semaphore() : m_cnt(LeastMax) {}
+	explicit counting_semaphore(ptrdiff_t desired) : m_cnt(desired) {}
+
+	counting_semaphore(const counting_semaphore&) = delete;
+	counting_semaphore& operator=(const counting_semaphore&) = delete;
+
+	void release(ptrdiff_t n = 1) { m_cnt += n; }
+	void acquire() { if (m_cnt > 0) m_cnt--; }
+	bool try_acquire() {
+		if (m_cnt > 0) { m_cnt--; return true; }
+		return false;
+	}
+
+	static constexpr ptrdiff_t max() { return LeastMax; }
+
+private:
+	ptrdiff_t m_cnt;
+};
+
+typedef counting_semaphore<> binary_semaphore;
+
+}  /* namespace std */
+
+#endif

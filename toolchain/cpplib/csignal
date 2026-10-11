@@ -1,0 +1,29 @@
+#ifndef PRIZM_CPPSHIM_CSIGNAL
+#define PRIZM_CPPSHIM_CSIGNAL
+
+/* <csignal>.  There is no OS on the calculator, so signal() just
+   remembers the handler and raise() reports that nothing happened.
+   sig_atomic_t stays a plain int. */
+
+typedef int sig_atomic_t;
+
+#define SIGABRT 6
+#define SIGFPE  8
+#define SIGILL  4
+#define SIGINT  2
+#define SIGSEGV 11
+#define SIGTERM 15
+
+typedef void (*__sig_handler_t)(int);
+
+#define SIG_DFL ((__sig_handler_t)0)
+#define SIG_IGN ((__sig_handler_t)1)
+
+inline __sig_handler_t signal(int, __sig_handler_t handler) {
+	/* handlers are never invoked; the previous setting is reported */
+	return handler == SIG_IGN ? SIG_IGN : SIG_DFL;
+}
+
+inline int raise(int) { return 0; }
+
+#endif

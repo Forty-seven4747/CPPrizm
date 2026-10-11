@@ -1,0 +1,39 @@
+#ifndef PRIZM_CPPSHIM_CWCTYPE
+#define PRIZM_CPPSHIM_CWCTYPE
+
+/* <cwctype>.  Wide classification routes through the narrow <cctype>
+   routines for the ASCII range; everything else is not a character the
+   calculator font knows about. */
+
+#include <cwchar>
+#include <cctype>
+
+namespace std {
+
+inline int iswalnum(wint_t c) { return c < 128 ? (isalnum((int)c) ? 1 : 0) : 0; }
+inline int iswalpha(wint_t c) { return c < 128 ? (isalpha((int)c) ? 1 : 0) : 0; }
+inline int iswblank(wint_t c) { return c == ' ' || c == '\t'; }
+inline int iswcntrl(wint_t c) { return c < 128 ? (iscntrl((int)c) ? 1 : 0) : 0; }
+inline int iswdigit(wint_t c) { return c >= '0' && c <= '9'; }
+inline int iswgraph(wint_t c) { return c < 128 ? (isgraph((int)c) ? 1 : 0) : 0; }
+inline int iswlower(wint_t c) { return c < 128 ? (islower((int)c) ? 1 : 0) : 0; }
+inline int iswprint(wint_t c) { return c < 128 ? (isprint((int)c) ? 1 : 0) : 0; }
+inline int iswpunct(wint_t c) { return c < 128 ? (ispunct((int)c) ? 1 : 0) : 0; }
+inline int iswspace(wint_t c) { return c < 128 ? (isspace((int)c) ? 1 : 0) : 0; }
+inline int iswupper(wint_t c) { return c < 128 ? (isupper((int)c) ? 1 : 0) : 0; }
+inline int iswxdigit(wint_t c) { return c < 128 ? (isxdigit((int)c) ? 1 : 0) : 0; }
+
+inline wint_t towlower(wint_t c) { return c < 128 ? (wint_t)tolower((int)c) : c; }
+inline wint_t towupper(wint_t c) { return c < 128 ? (wint_t)toupper((int)c) : c; }
+
+typedef int wctype_t;
+typedef int wctrans_t;
+
+inline int iswctype(wint_t, wctype_t) { return 0; }
+inline wctype_t wctype(const char*) { return (wctype_t)0; }
+inline wint_t towctrans(wint_t c, wctrans_t) { return c; }
+inline wctrans_t wctrans(const char*) { return (wctrans_t)0; }
+
+}  /* namespace std */
+
+#endif

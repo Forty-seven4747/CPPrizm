@@ -1,0 +1,81 @@
+#ifndef PRIZM_CPPLIB_SPAN
+#define PRIZM_CPPLIB_SPAN
+
+/* Dynamic-extent span, a non-owning view over contiguous objects.  The fixed
+   extent variant is not needed by anything this toolchain targets. */
+
+#include <cstddef>
+#include <type_traits>
+
+namespace std {
+
+inline constexpr size_t dynamic_extent = (size_t)-1;
+
+template<class T>
+class span {
+public:
+	typedef T element_type;
+	typedef remove_cv_t<T> value_type;
+	typedef size_t size_type;
+	typedef ptrdiff_t difference_type;
+	typedef T* pointer;
+	typedef const T* const_pointer;
+	typedef T& reference;
+	typedef const T& const_reference;
+
+	typedef T* iterator;
+	typedef const T* const_iterator;
+	typedef std::reverse_iterator<iterator> reverse_iterator;
+	typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
+
+	span() : m_d(0), m_n(0) {}
+	span(T* d, size_t n) : m_d(d), m_n(n) {}
+	span(T* f, T* l) : m_d(f), m_n((size_t)(l - f)) {}
+	template<size_t N>
+	span(T (&a)[N]) : m_d(a), m_n(N) {}
+	template<class C>
+	span(C& c) : m_d(c.data()), m_n(c.size()) {}
+
+	iterator begin() { return m_d; }
+	iterator end()   { return m_d + m_n; }
+	const_iterator begin() const { return m_d; }
+	const_iterator end()   const { return m_d + m_n; }
+	const_iterator cbegin() const { return m_d; }
+	const_iterator cend()   const { return m_d + m_n; }
+
+	reverse_iterator rbegin() { return reverse_iterator(end()); }
+	reverse_iterator rend()   { return reverse_iterator(begin()); }
+	const_reverse_iterator rbegin() const { return const_reverse_iterator(end()); }
+	const_reverse_iterator rend()   const { return const_reverse_iterator(begin()); }
+
+	reference operator[](size_t i) const { return m_d[i]; }
+	reference at(size_t i) const { return m_d[i]; }
+	reference front() const { return m_d[0]; }
+	reference back()  const { return m_d[m_n - 1]; }
+	T* data() const { return m_d; }
+
+	size_t size() const { return m_n; }
+	size_t size_bytes() const { return m_n * sizeof(T); }
+	bool empty() const { return m_n == 0; }
+
+	span first(size_t n) const { return span(m_d, n); }
+	span last(size_t n) const  { return span(m_d + (m_n - n), n); }
+	span subspan(size_t off) const { return span(m_d + off, m_n - off); }
+	span subspan(size_t off, size_t n) const { return span(m_d + off, n); }
+
+private:
+	T*     m_d;
+	size_t m_n;
+};
+
+/* Deduction guides */
+template<class It, class End>
+span(It, End) -> span<typename iterator_traits<It>::value_type>;
+template<class T, size_t N>
+span(T (&)[N]) -> span<T>;
+template<class C>
+span(C&) -> span<typename C::value_type>;
+
+}
+
+#endif

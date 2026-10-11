@@ -1,0 +1,241 @@
+#ifndef PRIZM_CPPSHIM_FUTURE
+#define PRIZM_CPPSHIM_FUTURE
+
+/* <future>.  Single core: a promise stores its value and the future
+   reads it back; get() never waits because the value is already there.
+   set_value twice or get on an empty future goes to the fatal hook
+   instead of throwing future_error. */
+
+#include <memory>
+#include <functional>
+#include <mutex>
+#include <chrono>
+#include <exception>
+
+namespace std {
+
+class future_error {};
+
+namespace __fut {
+
+enum __state { __empty, __ready, __broken };
+
+template<class T>
+struct __shared {
+	__shared() : m_st(__empty) {}
+	typename remove_reference<T>::type m_v;
+	__state m_st;
+};
+
+}  /* namespace __fut */
+
+template<class T>
+class promise;
+
+template<class T>
+class future {
+public:
+	future() : m_s(0) {}
+
+	T get() {
+		if (!m_s || m_s->m_st != __fut::__ready)
+		    __stl_fail("std::future: no value ready");
+		return m_s->m_v;
+	}
+
+	bool valid() const { return m_s != 0; }
+	bool is_ready() const { return m_s && m_s->m_st == __fut::__ready; }
+
+	void wait() const {}
+	template<class Rep, class Period>
+	bool wait_for(const chrono::duration<Rep, Period>&) const { return is_ready(); }
+	template<class Clock, class Duration>
+	bool wait_until(const chrono::time_point<Clock, Duration>&) const { return is_ready(); }
+
+private:
+	friend class promise<T>;
+	explicit future(shared_ptr<__fut::__shared<T> > s) : m_s(s) {}
+	shared_ptr<__fut::__shared<T> > m_s;
+};
+
+template<>
+class future<void> {
+public:
+	future() : m_s(0) {}
+
+	void get() {
+		if (!m_s || m_s->m_st != __fut::__ready)
+		    __stl_fail("std::future: no value ready");
+	}
+
+	bool valid() const { return m_s != 0; }
+	bool is_ready() const { return m_s && m_s->m_st == __fut::__ready; }
+
+	void wait() const {}
+	template<class Rep, class Period>
+	bool wait_for(const chrono::duration<Rep, Period>&) const { return is_ready(); }
+	template<class Clock, class Duration>
+	bool wait_until(const chrono::time_point<Clock, Duration>&) const { return is_ready(); }
+
+private:
+	friend class promise<void>;
+	explicit future(shared_ptr<__fut::__shared<int> > s) : m_s(s) {}
+	shared_ptr<__fut::__shared<int> > m_s;
+};
+
+template<class T>
+class promise {
+public:
+	promise() : m_s(new __fut::__shared<T>()) {}
+	promise(promise&& o) : m_s(o.m_s) { o.m_s.reset(); }
+	promise(const promise&) = delete;
+	promise& operator=(promise&& o) { m_s = o.m_s; o.m_s.reset(); return *this; }
+
+	future<T> get_future() { return future<T>(m_s); }
+
+	void set_value(const T& v) {
+		m_s->m_v = v;
+		m_s->m_st = __fut::__ready;
+	}
+	void set_value(T&& v) {
+		m_s->m_v = static_cast<T&&>(v);
+		m_s->m_st = __fut::__ready;
+	}
+	template<class E>
+	void set_exception(E&&) { m_s->m_st = __fut::__broken; }
+	void break_promise()    { m_s->m_st = __fut::__broken; }
+
+private:
+	shared_ptr<__fut::__shared<T> > m_s;
+};
+
+template<>
+class promise<void> {
+public:
+	promise() : m_s(new __fut::__shared<int>()) {}
+	promise(promise&& o) : m_s(o.m_s) { o.m_s.reset(); }
+	promise(const promise&) = delete;
+	promise& operator=(promise&& o) { m_s = o.m_s; o.m_s.reset(); return *this; }
+
+	future<void> get_future() { return future<void>(m_s); }
+
+	void set_value()        { m_s->m_st = __fut::__ready; }
+	template<class E>
+	void set_exception(E&&) { m_s->m_st = __fut::__broken; }
+	void break_promise()    { m_s->m_st = __fut::__broken; }
+
+private:
+	shared_ptr<__fut::__shared<int> > m_s;
+};
+
+template<class T>
+inline void swap(promise<T>& a, promise<T>& b) {
+	shared_ptr<__fut::__shared<T> > t = a.m_s;
+	a.m_s = b.m_s; b.m_s = t;
+}
+
+/* ---- packaged_task --------------------------------------------------- */
+
+template<class> class packaged_task;
+
+template<class R, class... Args>
+class packaged_task<R(Args...)> {
+public:
+	packaged_task() : m_p(0) {}
+	explicit packaged_task(function<R(Args...)> f)
+	    : m_p(new promise<R>()), m_f(f) {}
+	packaged_task(packaged_task&& o)
+	    : m_p(o.m_p), m_f(o.m_f) { o.m_p = 0; }
+	packaged_task(const packaged_task&) = delete;
+
+	future<R> get_future() { return m_p ? m_p->get_future() : future<R>(); }
+
+	void operator()(Args... args) {
+		if (!m_p) {
+			__stl_fail("std::packaged_task: called while empty");
+			return;
+		}
+		m_p->set_value(m_f(static_cast<Args&&>(args)...));
+	}
+
+	bool valid() const { return m_p != 0; }
+
+private:
+	promise<R>* m_p;
+	function<R(Args...)> m_f;
+};
+
+template<class... Args>
+class packaged_task<void(Args...)> {
+public:
+	packaged_task() : m_p(0) {}
+	explicit packaged_task(function<void(Args...)> f)
+	    : m_p(new promise<void>()), m_f(f) {}
+	packaged_task(packaged_task&& o)
+	    : m_p(o.m_p), m_f(o.m_f) { o.m_p = 0; }
+	packaged_task(const packaged_task&) = delete;
+
+	future<void> get_future() { return m_p ? m_p->get_future() : future<void>(); }
+
+	void operator()(Args... args) {
+		if (!m_p) {
+			__stl_fail("std::packaged_task: called while empty");
+			return;
+		}
+		m_f(static_cast<Args&&>(args)...);
+		m_p->set_value();
+	}
+
+	bool valid() const { return m_p != 0; }
+
+private:
+	promise<void>* m_p;
+	function<void(Args...)> m_f;
+};
+
+/* ---- async: runs synchronously, whatever the policy ------------------- */
+
+enum class launch : unsigned {
+	async    = 1,
+	deferred = 2,
+	any      = 3
+};
+
+namespace __fut {
+
+template<class R>
+struct __deliver {
+	template<class P, class F>
+	static void go(P& p, F& run) { p.set_value(run()); }
+};
+template<>
+struct __deliver<void> {
+	template<class P, class F>
+	static void go(P& p, F& run) { run(); p.set_value(); }
+};
+
+}  /* namespace __fut */
+
+template<class F, class... Args>
+future<typename result_of<typename decay<F>::type(typename decay<Args>::type...)>::type>
+async(launch, F&& f, Args&&... args) {
+	typedef typename result_of<
+	    typename decay<F>::type(typename decay<Args>::type...)>::type R;
+	promise<R> p;
+	future<R> fut = p.get_future();
+	function<R()> run = bind(forward<F>(f), forward<Args>(args)...);
+	__fut::__deliver<R>::go(p, run);
+	return fut;
+}
+
+template<class F, class... Args,
+         class = typename enable_if<
+             !is_same<typename decay<F>::type, launch>::value>::type>
+future<typename result_of<typename decay<F>::type(typename decay<Args>::type...)>::type>
+async(F&& f, Args&&... args) {
+	return async(launch::any, forward<F>(f), forward<Args>(args)...);
+}
+
+}  /* namespace std */
+
+#endif

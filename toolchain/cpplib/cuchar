@@ -1,0 +1,42 @@
+#ifndef PRIZM_CPPSHIM_CUCHAR
+#define PRIZM_CPPSHIM_CUCHAR
+
+/* <cuchar>.  char16_t / char32_t are language keywords; the conversion
+   functions only handle the trivial case (plain ASCII in, one unit out)
+   because there is no real multibyte encoding on the calculator. */
+
+#include <cwchar>
+
+namespace std {
+
+inline size_t mbrtoc16(char16_t* pc16, const char* s, size_t, mbstate_t*) {
+	if (!s) return 0;
+	if (!*s) { if (pc16) *pc16 = 0; return 0; }
+	if (pc16) *pc16 = (char16_t)(unsigned char)*s;
+	return 1;
+}
+
+inline size_t c16rtomb(char* s, char16_t c16, mbstate_t*) {
+	if (!s) return 1;
+	if (c16 >= 0x80) return (size_t)-1;
+	*s = (char)c16;
+	return 1;
+}
+
+inline size_t mbrtoc32(char32_t* pc32, const char* s, size_t, mbstate_t*) {
+	if (!s) return 0;
+	if (!*s) { if (pc32) *pc32 = 0; return 0; }
+	if (pc32) *pc32 = (char32_t)(unsigned char)*s;
+	return 1;
+}
+
+inline size_t c32rtomb(char* s, char32_t c32, mbstate_t*) {
+	if (!s) return 1;
+	if (c32 >= 0x80) return (size_t)-1;
+	*s = (char)c32;
+	return 1;
+}
+
+}  /* namespace std */
+
+#endif

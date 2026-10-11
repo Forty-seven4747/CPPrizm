@@ -579,9 +579,10 @@ template<class A> struct allocator_traits {
 	typedef size_t                       size_type;
 	typedef ptrdiff_t                    difference_type;
 
-	template<class U> struct rebind_alloc {
-		typedef typename A::template rebind<U>::other other;
-	};
+	/* C++17 shape: rebind_alloc is the rebound allocator itself, not a
+	   wrapper around it, so allocator_traits<rebind_alloc<U>>::allocate is
+	   callable directly. */
+	template<class U> using rebind_alloc = typename A::template rebind<U>::other;
 	template<class U> using rebind_traits = allocator_traits<rebind_alloc<U> >;
 
 	static pointer allocate(A& a, size_type n) { return a.allocate(n); }

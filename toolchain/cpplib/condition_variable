@@ -1,0 +1,63 @@
+#ifndef PRIZM_CPPSHIM_CONDITION_VARIABLE
+#define PRIZM_CPPSHIM_CONDITION_VARIABLE
+
+/* <condition_variable>.  Nothing ever blocks here: a waiter runs
+   straight through, a notifier wakes nobody because there is nobody
+   asleep.  The predicates versions run the predicate once. */
+
+#include <chrono>
+#include <mutex>
+
+namespace std {
+
+class condition_variable {
+public:
+	condition_variable() {}
+
+	condition_variable(const condition_variable&) = delete;
+	condition_variable& operator=(const condition_variable&) = delete;
+
+	void notify_one() {}
+	void notify_all() {}
+
+	void wait(unique_lock<mutex>&) {}
+
+	template<class Predicate>
+	void wait(unique_lock<mutex>& lk, Predicate pred) {
+		while (!pred()) { /* nothing can arrive */ break; }
+	}
+
+	template<class Rep, class Period>
+	bool wait_for(unique_lock<mutex>&, const chrono::duration<Rep, Period>&) {
+		return true;
+	}
+
+	template<class Clock, class Duration>
+	bool wait_until(unique_lock<mutex>&, const chrono::time_point<Clock, Duration>&) {
+		return true;
+	}
+};
+
+class condition_variable_any {
+public:
+	condition_variable_any() {}
+
+	condition_variable_any(const condition_variable_any&) = delete;
+	condition_variable_any& operator=(const condition_variable_any&) = delete;
+
+	void notify_one() {}
+	void notify_all() {}
+
+	template<class Lock>
+	void wait(Lock&) {}
+
+	template<class Lock, class Predicate>
+	void wait(Lock&, Predicate pred) { while (!pred()) break; }
+};
+
+void swap(condition_variable&, condition_variable&) {}
+void swap(condition_variable_any&, condition_variable_any&) {}
+
+}  /* namespace std */
+
+#endif

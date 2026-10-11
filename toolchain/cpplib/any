@@ -1,0 +1,132 @@
+#ifndef PRIZM_CPPLIB_ANY
+#define PRIZM_CPPLIB_ANY
+
+/* C++17 any.  The build has no RTTI, so the standard typeid-based type check
+   is replaced by a per-instantiation static tag whose address is unique for
+   each stored type; any_cast compares the tags.  A bad cast calls the
+   runtime fatal hook instead of throwing bad_any_cast. */
+
+#include <cstddef>
+#include <utility>
+#include <type_traits>
+#include <typeindex>
+
+namespace std {
+
+class bad_any_cast {};
+
+class any {
+public:
+	any() : m_p(0) {}
+	any(const any& o) : m_p(o.m_p ? o.m_p->clone() : 0) {}
+	any(any&& o) : m_p(o.m_p) { o.m_p = 0; }
+
+	template<class U, class = typename enable_if<
+	    !is_same<typename decay<U>::type, any>::value &&
+	    is_copy_constructible<typename decay<U>::type>::value>::type>
+	any(U&& v) : m_p(new __holder<typename decay<U>::type>(static_cast<U&&>(v))) {}
+
+	~any() { delete m_p; }
+
+	any& operator=(const any& o) {
+		if (this != &o) {
+			__base* n = o.m_p ? o.m_p->clone() : 0;
+			delete m_p;
+			m_p = n;
+		}
+		return *this;
+	}
+	any& operator=(any&& o) {
+		if (this != &o) {
+			__base* n = o.m_p; o.m_p = 0;
+			delete m_p;
+			m_p = n;
+		}
+		return *this;
+	}
+	template<class U, class = typename enable_if<
+	    !is_same<typename decay<U>::type, any>::value &&
+	    is_copy_constructible<typename decay<U>::type>::value>::type>
+	any& operator=(U&& v) {
+		any tmp(static_cast<U&&>(v));
+		swap(tmp);
+		return *this;
+	}
+
+	template<class T, class... Args>
+	void emplace(Args&&... args) {
+		delete m_p;
+		m_p = new __holder<T>(static_cast<Args&&>(args)...);
+	}
+	void reset() { delete m_p; m_p = 0; }
+	void swap(any& o) { __base* t = m_p; m_p = o.m_p; o.m_p = t; }
+
+	bool has_value() const { return m_p != 0; }
+	type_index type() const {
+		return m_p ? type_index(m_p->tag()) : type_index();
+	}
+
+private:
+	struct __base {
+		virtual ~__base() {}
+		virtual __base* clone() const = 0;
+		virtual const void* tag() const = 0;
+	};
+
+	template<class T>
+	struct __holder : __base {
+		T m_v;
+		static char m_tag;
+		explicit __holder(const T& v) : m_v(v) {}
+		explicit __holder(T&& v) : m_v(static_cast<T&&>(v)) {}
+		template<class... Args>
+		explicit __holder(Args&&... args) : m_v(static_cast<Args&&>(args)...) {}
+		__base* clone() const { return new __holder(m_v); }
+		const void* tag() const { return &m_tag; }
+	};
+
+	template<class T> friend const T* any_cast(const any*) noexcept;
+	template<class T> friend T* any_cast(any*) noexcept;
+
+	__base* m_p;
+};
+
+template<class T> char any::__holder<T>::m_tag = 0;
+
+inline void swap(any& a, any& b) { a.swap(b); }
+
+/* ---- cast --------------------------------------------------------- */
+
+template<class T>
+T* any_cast(any* a) noexcept {
+	typedef typename remove_cv<T>::type T0;
+	if (!a || !a->m_p || a->m_p->tag() != &any::__holder<T0>::m_tag) return 0;
+	return &static_cast<any::__holder<T0>*>(a->m_p)->m_v;
+}
+template<class T>
+const T* any_cast(const any* a) noexcept {
+	return any_cast<T>(const_cast<any*>(a));
+}
+
+template<class T>
+T& any_cast(any& a) {
+	T* p = any_cast<T>(&a);
+	if (!p) __stl_fail("std::any: bad any_cast");
+	return *p;
+}
+template<class T>
+const T& any_cast(const any& a) {
+	return any_cast<T>(const_cast<any&>(a));
+}
+
+/* make_any */
+template<class T, class... Args>
+any make_any(Args&&... args) {
+	any a;
+	a.emplace<T>(static_cast<Args&&>(args)...);
+	return a;
+}
+
+}
+
+#endif

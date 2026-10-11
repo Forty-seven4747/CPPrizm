@@ -1,0 +1,459 @@
+#ifndef PRIZM_CPPLIB_FORWARD_LIST
+#define PRIZM_CPPLIB_FORWARD_LIST
+
+/* Singly linked list.  The sentinel is a base without the value member, so
+   the list itself does not require T to be default constructible, and
+   before_begin() gives access to it for insert_after at the front. */
+
+#include <cstddef>
+#include <memory>
+#include <algorithm>
+#include <type_traits>
+
+namespace std {
+
+template<class T, class A = std::allocator<T>>
+class forward_list {
+public:
+	typedef T        value_type;
+	typedef A        allocator_type;
+	typedef size_t   size_type;
+	typedef ptrdiff_t difference_type;
+	typedef T&       reference;
+	typedef const T& const_reference;
+	typedef typename A::pointer         pointer;
+	typedef typename A::const_pointer   const_pointer;
+
+private:
+	struct base {
+		base* m_next;
+		base() : m_next(0) {}
+	};
+	struct node : base {
+		T m_v;
+		template<class U>
+		node(U&& u) : m_v(static_cast<U&&>(u)) {}
+	};
+
+	A m_alloc;
+
+	template<class N, class Ref, class Ptr>
+	class iter {
+	public:
+		typedef forward_iterator_tag iterator_category;
+		typedef T  value_type;
+		typedef Ptr pointer;
+		typedef Ref reference;
+
+		iter() : m_p(0) {}
+		explicit iter(base* p) : m_p(p) {}
+		template<class N2, class R2, class P2>
+		iter(const iter<N2, R2, P2>& o) : m_p(o.m_p) {}
+
+		Ref operator*() const  { return static_cast<N*>(m_p)->m_v; }
+		Ptr operator->() const { return &static_cast<N*>(m_p)->m_v; }
+
+		iter& operator++()    { m_p = m_p->m_next; return *this; }
+		iter operator++(int)  { iter t(m_p); m_p = m_p->m_next; return t; }
+
+		bool operator==(const iter& o) const { return m_p == o.m_p; }
+		bool operator!=(const iter& o) const { return m_p != o.m_p; }
+
+		base* m_p;
+	};
+
+public:
+	typedef iter<node, T&, T*>                        iterator;
+	typedef iter<const node, const T&, const T*>      const_iterator;
+
+	forward_list() : m_head() {}
+	explicit forward_list(const A& a) : m_head(), m_alloc(a) {}
+	explicit forward_list(size_type n, const A& a = A()) : m_head(), m_alloc(a) {
+		while (n--) emplace_front();
+	}
+	forward_list(size_type n, const T& v, const A& a = A()) : m_head(), m_alloc(a) {
+		while (n--) push_front(v);
+	}
+	forward_list(const forward_list& o) : m_head(), m_alloc(o.m_alloc) {
+		base** d = &m_head.m_next;
+		for (const node* p = static_cast<const node*>(o.m_head.m_next); p; p = static_cast<const node*>(p->m_next)) {
+			node* n = __make(p->m_v);
+			*d = n; d = &n->m_next;
+		}
+	}
+	forward_list& operator=(const forward_list& o) {
+		if (this != &o) {
+			clear();
+			base** d = &m_head.m_next;
+			for (const node* p = static_cast<const node*>(o.m_head.m_next); p; p = static_cast<const node*>(p->m_next)) {
+				node* n = __make(p->m_v);
+				*d = n; d = &n->m_next;
+			}
+		}
+		return *this;
+	}
+	~forward_list() { clear(); }
+
+private:
+	base m_head;
+
+	typedef typename allocator_traits<A>::template rebind_alloc<node> node_alloc;
+	node_alloc m_na;
+
+	node* __make(const T& v) {
+		node* n = m_na.allocate(1);
+		__stl_construct(&n->m_v, v);
+		return n;
+	}
+	void __kill(node* n) {
+		__stl_destroy(&n->m_v);
+		m_na.deallocate(n, 1);
+	}
+
+public:
+	/* ---- iteration -------------------------------------------------- */
+
+	iterator begin() { return iterator(m_head.m_next); }
+	iterator end()   { return iterator(0); }
+	const_iterator begin() const { return const_iterator(m_head.m_next); }
+	const_iterator end()   const { return const_iterator(0); }
+
+	iterator before_begin()             { return iterator(&m_head); }
+	const_iterator before_begin() const { return const_iterator(const_cast<base*>(&m_head)); }
+	const_iterator cbefore_begin() const { return const_iterator(const_cast<base*>(&m_head)); }
+	const_iterator cbegin() const { return const_iterator(m_head.m_next); }
+	const_iterator cend()   const { return const_iterator(0); }
+
+	/* ---- capacity ---------------------------------------------------- */
+
+	bool empty() const { return m_head.m_next == 0; }
+	size_type max_size() const { return (size_type)-1 / sizeof(node); }
+
+	/* ---- element access ---------------------------------------------- */
+
+	reference front()       { return static_cast<node*>(m_head.m_next)->m_v; }
+	const_reference front() const { return static_cast<const node*>(m_head.m_next)->m_v; }
+
+	/* ---- modifiers ---------------------------------------------------- */
+
+	template<class... Args>
+	void emplace_front(Args&&... args) {
+		node* n = m_na.allocate(1);
+		__stl_construct(&n->m_v, static_cast<Args&&>(args)...);
+		n->m_next = m_head.m_next;
+		m_head.m_next = n;
+	}
+	void push_front(const T& v) { emplace_front(v); }
+	void push_front(T&& v)      { emplace_front(static_cast<T&&>(v)); }
+	void pop_front() {
+		node* n = static_cast<node*>(m_head.m_next);
+		m_head.m_next = n->m_next;
+		__kill(n);
+	}
+
+	template<class... Args>
+	iterator emplace_after(const_iterator pos, Args&&... args) {
+		base* b = const_cast<base*>(pos.m_p);
+		node* n = m_na.allocate(1);
+		__stl_construct(&n->m_v, static_cast<Args&&>(args)...);
+		n->m_next = b->m_next;
+		b->m_next = n;
+		return iterator(n);
+	}
+	iterator insert_after(const_iterator pos, const T& v) { return emplace_after(pos, v); }
+	iterator insert_after(const_iterator pos, T&& v)      { return emplace_after(pos, static_cast<T&&>(v)); }
+	iterator insert_after(const_iterator pos, size_type n, const T& v) {
+		iterator r;
+		while (n--) r = insert_after(pos, v);
+		return r;
+	}
+	template<class It>
+	iterator insert_after(const_iterator pos, It f, It l) {
+		iterator r;
+		for (; f != l; ++f) r = insert_after(pos, *f);
+		return r;
+	}
+
+	iterator erase_after(const_iterator pos) {
+		base* b = const_cast<base*>(pos.m_p);
+		node* dead = static_cast<node*>(b->m_next);
+		if (!dead) return end();
+		b->m_next = dead->m_next;
+		__kill(dead);
+		return iterator(b->m_next);
+	}
+	iterator erase_after(const_iterator f, const_iterator l) {
+		while (iterator(l.m_p) != erase_after(f)) {}
+		return iterator(l.m_p);
+	}
+
+	void clear() {
+		node* p = static_cast<node*>(m_head.m_next);
+		while (p) {
+			node* n = static_cast<node*>(p->m_next);
+			__kill(p);
+			p = n;
+		}
+		m_head.m_next = 0;
+	}
+
+	void resize(size_type n) {
+		size_type s = 0;
+		base* b = &m_head;
+		while (b->m_next && s < n) { b = b->m_next; s++; }
+		if (s == n) {
+			node* p = static_cast<node*>(b->m_next);
+			b->m_next = 0;
+			while (p) { node* nx = static_cast<node*>(p->m_next); __kill(p); p = nx; }
+		} else {
+			while (s++ < n) emplace_front();
+		}
+	}
+	void resize(size_type n, const T& v) {
+		size_type s = 0;
+		base* b = &m_head;
+		while (b->m_next && s < n) { b = b->m_next; s++; }
+		if (s == n) {
+			node* p = static_cast<node*>(b->m_next);
+			b->m_next = 0;
+			while (p) { node* nx = static_cast<node*>(p->m_next); __kill(p); p = nx; }
+		} else {
+			while (s++ < n) push_front(v);
+		}
+	}
+
+	void swap(forward_list& o) {
+		base* t = m_head.m_next; m_head.m_next = o.m_head.m_next; o.m_head.m_next = t;
+		A a = m_alloc; m_alloc = o.m_alloc; o.m_alloc = a;
+	}
+
+	/* ---- assign -------------------------------------------------------- */
+
+	void assign(size_type n, const T& v) {
+		clear();
+		while (n--) push_front(v);
+		reverse();
+	}
+	template<class It>
+	void assign(It f, It l) {
+		clear();
+		for (; f != l; ++f) push_front(*f);
+		reverse();
+	}
+	void assign(std::initializer_list<T> il) { assign(il.begin(), il.end()); }
+
+	forward_list(std::initializer_list<T> il, const A& a = A()) : m_head(), m_alloc(a) {
+		assign(il.begin(), il.end());
+	}
+	forward_list& operator=(std::initializer_list<T> il) { assign(il); return *this; }
+
+	template<class It>
+	forward_list(It f, It l, const A& a = A()) : m_head(), m_alloc(a) {
+		for (; f != l; ++f) push_front(*f);
+		reverse();
+	}
+
+	/* ---- list operations ----------------------------------------------- */
+
+	void splice_after(const_iterator pos, forward_list& o) {
+		if (this == &o || o.empty()) return;
+		base* b = const_cast<base*>(pos.m_p);
+		/* whole chain of o moves after b */
+		base* last = o.m_head.m_next;
+		while (last->m_next) last = last->m_next;
+		last->m_next = b->m_next;
+		b->m_next = o.m_head.m_next;
+		o.m_head.m_next = 0;
+	}
+	void splice_after(const_iterator pos, forward_list& o, const_iterator it) {
+		/* move the one node after it */
+		base* src = const_cast<base*>(it.m_p);
+		if (!src->m_next || (src->m_next == const_cast<base*>(pos.m_p))) return;
+		node* n = static_cast<node*>(src->m_next);
+		src->m_next = n->m_next;
+		base* b = const_cast<base*>(pos.m_p);
+		n->m_next = b->m_next;
+		b->m_next = n;
+	}
+	void splice_after(const_iterator pos, forward_list& o, const_iterator f, const_iterator l) {
+		/* (f, l) is a range in o relative to before_begin; move it after pos */
+		if (f == l) return;
+		base* src = const_cast<base*>(f.m_p);
+		base* stop = const_cast<base*>(l.m_p);
+		base* first = src->m_next;
+		base* last = first;
+		while (last->m_next != stop) last = last->m_next;
+		src->m_next = last->m_next;
+		base* b = const_cast<base*>(pos.m_p);
+		last->m_next = b->m_next;
+		b->m_next = first;
+	}
+
+	void remove(const T& v) {
+		base* b = &m_head;
+		while (b->m_next) {
+			node* n = static_cast<node*>(b->m_next);
+			if (n->m_v == v) {
+				b->m_next = n->m_next;
+				__kill(n);
+			} else {
+				b = b->m_next;
+			}
+		}
+	}
+	template<class Pred>
+	void remove_if(Pred p) {
+		base* b = &m_head;
+		while (b->m_next) {
+			node* n = static_cast<node*>(b->m_next);
+			if (p(n->m_v)) {
+				b->m_next = n->m_next;
+				__kill(n);
+			} else {
+				b = b->m_next;
+			}
+		}
+	}
+
+	void unique() {
+		base* b = m_head.m_next;
+		while (b && b->m_next) {
+			node* n = static_cast<node*>(b->m_next);
+			if (static_cast<node*>(b)->m_v == n->m_v) {
+				b->m_next = n->m_next;
+				__kill(n);
+			} else {
+				b = b->m_next;
+			}
+		}
+	}
+	template<class BinPred>
+	void unique(BinPred pred) {
+		base* b = m_head.m_next;
+		while (b && b->m_next) {
+			node* n = static_cast<node*>(b->m_next);
+			if (pred(static_cast<node*>(b)->m_v, n->m_v)) {
+				b->m_next = n->m_next;
+				__kill(n);
+			} else {
+				b = b->m_next;
+			}
+		}
+	}
+
+	void reverse() {
+		base* prev = 0;
+		base* cur = m_head.m_next;
+		while (cur) {
+			base* nxt = cur->m_next;
+			cur->m_next = prev;
+			prev = cur;
+			cur = nxt;
+		}
+		m_head.m_next = prev;
+	}
+
+	void merge(forward_list& o) {
+		__merge_run(o, [](const T& a, const T& b) { return a < b; });
+	}
+	template<class Cmp>
+	void merge(forward_list& o, Cmp c) {
+		__merge_run(o, c);
+	}
+
+	void sort() { __sort([](const T& a, const T& b) { return a < b; }); }
+	template<class Cmp>
+	void sort(Cmp c) { __sort(c); }
+
+private:
+	/* Merge the whole chain of o into this list, both sorted by c. */
+	template<class Cmp>
+	void __merge_run(forward_list& o, Cmp c) {
+		base** d = &m_head.m_next;
+		base* a = m_head.m_next;
+		base* b = o.m_head.m_next;
+		while (a && b) {
+			if (c(static_cast<node*>(b)->m_v, static_cast<node*>(a)->m_v)) {
+				*d = b;
+				base* nx = b->m_next;
+				b->m_next = a;
+				d = &b->m_next;
+				b = nx;
+			} else {
+				d = &a->m_next;
+				a = a->m_next;
+			}
+		}
+		if (b) *d = b;
+		o.m_head.m_next = 0;
+	}
+
+	/* Bottom-up merge sort: each node becomes a sorted run, runs are merged
+	   pairwise through a bucket table like list::sort does. */
+	template<class Cmp>
+	void __sort(Cmp c) {
+		if (!m_head.m_next || !m_head.m_next->m_next) return;
+		base* buckets[24];
+		for (int i = 0; i < 24; i++) buckets[i] = 0;
+		base* cur = m_head.m_next;
+		while (cur) {
+			base* nxt = cur->m_next;
+			cur->m_next = 0;
+			int i = 0;
+			while (buckets[i]) {
+				cur = __merge_chains(buckets[i], cur, c);
+				buckets[i] = 0;
+				i++;
+			}
+			buckets[i] = cur;
+			cur = nxt;
+		}
+		base* res = 0;
+		for (int i = 0; i < 24; i++)
+			res = __merge_chains(res, buckets[i], c);
+		m_head.m_next = res;
+	}
+
+	/* Merge two null-terminated chains of real nodes, return the new head. */
+	template<class Cmp>
+	static base* __merge_chains(base* a, base* b, Cmp c) {
+		if (!a) return b;
+		if (!b) return a;
+		base head_node;
+		base* d = &head_node;
+		while (a && b) {
+			if (c(static_cast<node*>(b)->m_v, static_cast<node*>(a)->m_v)) {
+				d->m_next = b; d = b; b = b->m_next;
+			} else {
+				d->m_next = a; d = a; a = a->m_next;
+			}
+		}
+		d->m_next = a ? a : b;
+		return head_node.m_next;
+	}
+
+public:
+	/* ---- comparisons ----------------------------------------------------- */
+
+	bool operator==(const forward_list& o) const {
+		const base* a = m_head.m_next;
+		const base* b = o.m_head.m_next;
+		while (a && b) {
+			if (!(static_cast<const node*>(a)->m_v == static_cast<const node*>(b)->m_v)) return false;
+			a = a->m_next;
+			b = b->m_next;
+		}
+		return a == 0 && b == 0;
+	}
+	bool operator!=(const forward_list& o) const { return !(*this == o); }
+	bool operator<(const forward_list& o) const {
+		return lexicographical_compare(begin(), end(), o.begin(), o.end());
+	}
+	bool operator>(const forward_list& o) const  { return o < *this; }
+	bool operator<=(const forward_list& o) const { return !(o < *this); }
+	bool operator>=(const forward_list& o) const { return !(*this < o); }
+};
+
+}
+
+#endif

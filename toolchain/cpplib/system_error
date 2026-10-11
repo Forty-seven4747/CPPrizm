@@ -1,0 +1,142 @@
+#ifndef PRIZM_CPPLIB_SYSTEM_ERROR
+#define PRIZM_CPPLIB_SYSTEM_ERROR
+
+/* error_code / error_category / error_condition.  The calculator has no
+   OS error domain, so there is one generic category and one system category,
+   both with the identity mapping. */
+
+#include <cstddef>
+#include <string>
+
+namespace std {
+
+class error_category;
+
+class error_code;
+class error_condition;
+
+class error_category {
+public:
+	virtual ~error_category() {}
+	virtual const char* name() const noexcept = 0;
+	virtual std::string message(int) const = 0;
+
+	bool operator==(const error_category& o) const noexcept { return this == &o; }
+	bool operator!=(const error_category& o) const noexcept { return this != &o; }
+	bool operator< (const error_category& o) const noexcept { return this < &o; }
+
+	virtual bool equivalent(int code, const error_condition&) const noexcept;
+	virtual bool equivalent(const error_code&, int cond) const noexcept;
+};
+
+class error_code {
+public:
+	error_code() : m_val(0), m_cat(0) {}
+	error_code(int v, const error_category& c) : m_val(v), m_cat(&c) {}
+
+	int value() const noexcept { return m_val; }
+	const error_category& category() const noexcept { return *m_cat; }
+	std::string message() const { return m_cat ? m_cat->message(m_val) : std::string(); }
+	error_condition default_error_condition() const noexcept;
+
+	explicit operator bool() const noexcept { return m_val != 0; }
+
+	bool operator==(const error_code& o) const noexcept {
+		return m_val == o.m_val && m_cat == o.m_cat;
+	}
+	bool operator!=(const error_code& o) const noexcept { return !(*this == o); }
+
+private:
+	int m_val;
+	const error_category* m_cat;
+};
+
+class error_condition {
+public:
+	error_condition() : m_val(0), m_cat(0) {}
+	error_condition(int v, const error_category& c) : m_val(v), m_cat(&c) {}
+
+	int value() const noexcept { return m_val; }
+	const error_category& category() const noexcept { return *m_cat; }
+	std::string message() const { return m_cat ? m_cat->message(m_val) : std::string(); }
+
+	explicit operator bool() const noexcept { return m_val != 0; }
+
+	bool operator==(const error_condition& o) const noexcept {
+		return m_val == o.m_val && m_cat == o.m_cat;
+	}
+	bool operator!=(const error_condition& o) const noexcept { return !(*this == o); }
+
+private:
+	int m_val;
+	const error_category* m_cat;
+};
+
+/* The two singleton categories. */
+class __generic_category_impl : public error_category {
+public:
+	const char* name() const noexcept { return "generic"; }
+	std::string message(int) const { return "generic error"; }
+};
+
+class __system_category_impl : public error_category {
+public:
+	const char* name() const noexcept { return "system"; }
+	std::string message(int) const { return "system error"; }
+};
+
+inline const error_category& generic_category() noexcept {
+	static __generic_category_impl c;
+	return c;
+}
+inline const error_category& system_category() noexcept {
+	static __system_category_impl c;
+	return c;
+}
+
+/* Identity mapping for both directions. */
+inline bool error_category::equivalent(int, const error_condition&) const noexcept { return false; }
+inline bool error_category::equivalent(const error_code&, int) const noexcept { return false; }
+
+inline error_condition error_code::default_error_condition() const noexcept {
+	return error_condition(m_val, m_cat ? *m_cat : generic_category());
+}
+
+inline error_code make_error_code(int v, const error_category& c = system_category()) {
+	return error_code(v, c);
+}
+inline error_condition make_error_condition(int v, const error_category& c = generic_category()) {
+	return error_condition(v, c);
+}
+
+/* Values follow the usual POSIX errno numbers. */
+enum class errc {
+	success                          = 0,
+	operation_not_permitted          = 1,
+	no_such_file_or_directory        = 2,
+	no_space_on_device               = 28,
+	permission_denied                = 13,
+	broken_pipe                      = 32,
+	out_of_memory                    = 12,
+	resource_unavailable_try_again   = 11,
+	function_not_supported           = 38,
+	address_family_not_supported     = 97,
+	address_in_use                   = 98,
+	connection_refused               = 111,
+	timed_out                        = 110,
+	result_out_of_range              = 34,
+	value_too_large                  = 75,
+	not_supported                    = 95,
+	invalid_argument                 = 22
+};
+
+inline error_code make_error_code(errc e) noexcept {
+	return error_code((int)e, generic_category());
+}
+inline error_condition make_error_condition(errc e) noexcept {
+	return error_condition((int)e, generic_category());
+}
+
+}
+
+#endif

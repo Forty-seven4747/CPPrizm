@@ -1,0 +1,37 @@
+#ifndef PRIZM_CPPSHIM_CFENV
+#define PRIZM_CPPSHIM_CFENV
+
+/* <cfenv>.  The SH-4A build does all floating point in software, so
+   there is no environment to touch: every function is a harmless no-op
+   and the macros exist so that code still compiles. */
+
+typedef struct { unsigned int __w[2]; } fenv_t;
+typedef unsigned int         fexcept_t;
+
+#define FE_INVALID   0x01
+#define FE_DIVBYZERO 0x02
+#define FE_OVERFLOW  0x04
+#define FE_UNDERFLOW 0x08
+#define FE_INEXACT   0x10
+#define FE_ALL_EXCEPT 0x1F
+
+#define FE_TONEAREST  0
+#define FE_DOWNWARD   1
+#define FE_UPWARD     2
+#define FE_TOWARDZERO 3
+
+#define FE_DFL_ENV ((const fenv_t*)0)
+
+inline int feclearexcept(int)                { return 0; }
+inline int fetestexcept(int excepts)         { return excepts & 0; }
+inline int feraiseexcept(int)                { return 0; }
+inline int fegetexceptflag(fexcept_t* f, int){ if (f) *f = 0; return 0; }
+inline int fesetexceptflag(const fexcept_t*, int) { return 0; }
+inline int fegetround(void)                  { return FE_TONEAREST; }
+inline int fesetround(int)                   { return 0; }
+inline int fegetenv(fenv_t* e)               { if (e) { e->__w[0] = 0; e->__w[1] = 0; } return 0; }
+inline int fesetenv(const fenv_t*)           { return 0; }
+inline int feholdexcept(fenv_t* e)           { if (e) { e->__w[0] = 0; e->__w[1] = 0; } return 0; }
+inline int feupdateenv(const fenv_t*)        { return 0; }
+
+#endif

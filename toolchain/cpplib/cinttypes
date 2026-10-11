@@ -1,0 +1,112 @@
+#ifndef PRIZM_CPPSHIM_CINTTYPES
+#define PRIZM_CPPSHIM_CINTTYPES
+
+/* <cinttypes>.  The fixed-width types come from <cstdint>; what is added
+   here is the imax family and the printf-style macro zoo, of which only
+   the intmax_t forms are actually useful without a printf. */
+
+#include <cstdint>
+
+#ifndef PRId32
+#define PRId32 "d"
+#define PRIi32 "i"
+#define PRIo32 "o"
+#define PRIu32 "u"
+#define PRIx32 "x"
+#define PRIX32 "X"
+#define PRId64 "lld"
+#define PRIi64 "lli"
+#define PRIo64 "llo"
+#define PRIu64 "llu"
+#define PRIx64 "llx"
+#define PRIX64 "llX"
+#define PRIdLEAST32 "d"
+#define PRIdLEAST64 "lld"
+#define PRIuLEAST32 "u"
+#define PRIuLEAST64 "llu"
+#define PRIdMAX "lld"
+#define PRIiMAX "lli"
+#define PRIoMAX "llo"
+#define PRIuMAX "llu"
+#define PRIxMAX "llx"
+#define PRIXMAX "llX"
+#define PRIdPTR "ld"
+#define PRIuPTR "lu"
+#define PRIxPTR "lx"
+#endif
+
+namespace std {
+
+struct imaxdiv_t {
+	intmax_t quot;
+	intmax_t rem;
+};
+
+inline intmax_t imaxabs(intmax_t v) { return v < 0 ? -v : v; }
+
+inline imaxdiv_t imaxdiv(intmax_t n, intmax_t d) {
+	imaxdiv_t r;
+	r.quot = n / d;
+	r.rem  = n % d;
+	return r;
+}
+
+/* no libc strtoll on the target, so intmax parsing is spelled out */
+inline intmax_t strtoimax(const char* s, char** end, int base) {
+	while (*s == ' ' || (*s >= '\t' && *s <= '\r')) s++;
+	bool neg = false;
+	if (*s == '-') { neg = true; s++; }
+	else if (*s == '+') s++;
+	unsigned long long acc = 0;
+	bool any = false, ovf = false;
+	while (*s) {
+		int d;
+		if (*s >= '0' && *s <= '9') d = *s - '0';
+		else if (*s >= 'a' && *s <= 'z') d = *s - 'a' + 10;
+		else if (*s >= 'A' && *s <= 'Z') d = *s - 'A' + 10;
+		else break;
+		if (d >= base) break;
+		any = true;
+		if (!ovf) {
+			if (acc > (0x7FFFFFFFFFFFFFFFULL - (unsigned)d) / (unsigned)base)
+			    ovf = true;
+			else acc = acc * (unsigned)base + (unsigned)d;
+		}
+		s++;
+	}
+	if (end) *end = const_cast<char*>(s);
+	if (!any) return 0;
+	if (ovf) return neg ? (-0x7FFFFFFFFFFFFFFFLL - 1) : 0x7FFFFFFFFFFFFFFFLL;
+	return neg ? (intmax_t)(0ULL - acc) : (intmax_t)acc;
+}
+
+inline uintmax_t strtoumax(const char* s, char** end, int base) {
+	while (*s == ' ' || (*s >= '\t' && *s <= '\r')) s++;
+	if (*s == '-') s++;
+	else if (*s == '+') s++;
+	unsigned long long acc = 0;
+	bool any = false, ovf = false;
+	while (*s) {
+		int d;
+		if (*s >= '0' && *s <= '9') d = *s - '0';
+		else if (*s >= 'a' && *s <= 'z') d = *s - 'a' + 10;
+		else if (*s >= 'A' && *s <= 'Z') d = *s - 'A' + 10;
+		else break;
+		if (d >= base) break;
+		any = true;
+		if (!ovf) {
+			if (acc > (0xFFFFFFFFFFFFFFFFULL - (unsigned)d) / (unsigned)base)
+			    ovf = true;
+			else acc = acc * (unsigned)base + (unsigned)d;
+		}
+		s++;
+	}
+	if (end) *end = const_cast<char*>(s);
+	if (!any) return 0;
+	if (ovf) return 0xFFFFFFFFFFFFFFFFULL;
+	return (uintmax_t)acc;
+}
+
+}  /* namespace std */
+
+#endif

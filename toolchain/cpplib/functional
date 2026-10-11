@@ -218,6 +218,290 @@ inline bool operator!=(const function<R(Args...)>& f, nullptr_t) { return (bool)
 template<class R, class... Args>
 inline bool operator!=(nullptr_t, const function<R(Args...)>& f) { return (bool)f; }
 
+/* =====================================================================
+   bind, mem_fn, not_fn, bind_front
+
+   The binder stores its bound arguments in a tiny recursive tuple.  At
+   call time every stored argument is evaluated: a plain value is passed
+   through, a placeholder picks the matching call argument, a nested bind
+   expression is invoked with no arguments and a reference_wrapper is
+   unwrapped.  Everything is done by tag dispatch on __ev_kind so the
+   overload set stays unambiguous.
+   ===================================================================== */
+
+namespace placeholders {
+template<int N> struct ph {};
+inline constexpr ph<1>  _1 {};
+inline constexpr ph<2>  _2 {};
+inline constexpr ph<3>  _3 {};
+inline constexpr ph<4>  _4 {};
+inline constexpr ph<5>  _5 {};
+inline constexpr ph<6>  _6 {};
+inline constexpr ph<7>  _7 {};
+inline constexpr ph<8>  _8 {};
+inline constexpr ph<9>  _9 {};
+inline constexpr ph<10> _10 {};
+}  /* namespace placeholders */
+
+template<class T> struct is_placeholder       : integral_constant<int, 0> {};
+template<int N>
+struct is_placeholder<placeholders::ph<N> >   : integral_constant<int, N> {};
+
+/* --- the mini tuple used to hold bound arguments --------------------- */
+
+template<class... Ts> struct __btuple {};
+template<> struct __btuple<> { enum { __len = 0 }; };
+
+template<class T, class... Rest>
+struct __btuple<T, Rest...> : __btuple<Rest...> {
+	T m_val;
+	enum { __len = 1 + (int)__btuple<Rest...>::__len };
+	template<class U, class... URest>
+	__btuple(U&& u, URest&&... r)
+	    : __btuple<Rest...>(static_cast<URest&&>(r)...),
+	      m_val(static_cast<U&&>(u)) {}
+};
+
+template<int I, class Tup> struct __bt_get;
+
+template<class T, class... Rest>
+struct __bt_get<0, __btuple<T, Rest...> > {
+	typedef T type;
+	static T& get(__btuple<T, Rest...>& t) { return t.m_val; }
+};
+
+template<int I, class T, class... Rest>
+struct __bt_get<I, __btuple<T, Rest...> > {
+	typedef typename __bt_get<I - 1, __btuple<Rest...> >::type type;
+	static typename __bt_get<I - 1, __btuple<Rest...> >::type&
+	get(__btuple<T, Rest...>& t) {
+		return __bt_get<I - 1, __btuple<Rest...> >::get(
+		    static_cast<__btuple<Rest...>&>(t));
+	}
+};
+
+/* --- index pack so every bound argument can be expanded at once ------ */
+
+template<int...> struct __idx {};
+template<int N, int... Is> struct __mk_idx : __mk_idx<N - 1, N - 1, Is...> {};
+template<int... Is> struct __mk_idx<0, Is...> { typedef __idx<Is...> type; };
+
+/* --- evaluating one bound argument ----------------------------------- */
+
+template<class B> struct __ev_kind { static const int v = 0; };  /* plain value */
+template<int N> struct __ev_kind<placeholders::ph<N> > { static const int v = 1; };
+
+/* nested bind expressions are invoked with the call arguments unpacked */
+template<class B, class CTup, int... Is>
+inline auto __unpack_call(B& b, CTup& cp, __idx<Is...>)
+    -> decltype(b(__bt_get<Is, CTup>::get(cp)...))
+{
+	return b(__bt_get<Is, CTup>::get(cp)...);
+}
+
+template<int V> struct __ev_dispatch;
+
+/* plain bound value: pass it through */
+template<> struct __ev_dispatch<0> {
+	template<class B, class CTup>
+	static B& eval(B& b, CTup&) { return b; }
+};
+
+/* placeholder: pick the matching call argument from the call tuple */
+template<> struct __ev_dispatch<1> {
+	template<int N, class CTup>
+	static typename __bt_get<N - 1, CTup>::type&
+	eval(placeholders::ph<N>, CTup& cp) {
+		return __bt_get<N - 1, CTup>::get(cp);
+	}
+};
+
+/* nested bind expression: forward-declared here, defined below */
+template<class F, class... BoundArgs> class __binder;
+template<class F, class... BoundArgs>
+struct __ev_kind<__binder<F, BoundArgs...> > { static const int v = 2; };
+
+template<> struct __ev_dispatch<2> {
+	template<class F2, class... BA, class CTup>
+	static auto eval(__binder<F2, BA...>& b, CTup& cp)
+	    -> decltype(__unpack_call(b, cp,
+	        typename __mk_idx<CTup::__len>::type()))
+	{
+		return __unpack_call(b, cp, typename __mk_idx<CTup::__len>::type());
+	}
+};
+
+/* reference_wrapper: unwrap */
+template<> struct __ev_dispatch<3> {
+	template<class T, class CTup>
+	static T& eval(reference_wrapper<T> r, CTup&) { return r.get(); }
+};
+
+template<class B, class CTup>
+inline auto __eval(B& b, CTup& cp)
+    -> decltype(__ev_dispatch<__ev_kind<B>::v>::eval(b, cp))
+{
+	return __ev_dispatch<__ev_kind<B>::v>::eval(b, cp);
+}
+
+/* --- the binder itself ------------------------------------------------ */
+
+template<class F, class... BoundArgs>
+class __binder {
+	typedef __btuple<typename decay<BoundArgs>::type...> __btp;
+	typedef typename __mk_idx<sizeof...(BoundArgs)>::type __bidx;
+
+	F m_f;
+	__btp m_a;
+
+	template<class CTup, int... Is>
+	static auto __invoke(F& f, __btp& t, CTup& cp, __idx<Is...>)
+	    -> decltype(f(__eval(__bt_get<Is, __btp>::get(t), cp)...))
+	{
+		return f(__eval(__bt_get<Is, __btp>::get(t), cp)...);
+	}
+
+public:
+	__binder(F f, BoundArgs... b)
+	    : m_f(f), m_a(static_cast<BoundArgs&&>(b)...) {}
+
+	template<class... CArgs>
+	auto operator()(CArgs... c)
+	    -> decltype(__invoke(m_f, m_a,
+	            __stl_declval<__btuple<CArgs...>&>(), __bidx()))
+	{
+		__btuple<CArgs...> cp(static_cast<CArgs&&>(c)...);
+		return __invoke(m_f, m_a, cp, __bidx());
+	}
+};
+
+template<class T> struct is_bind_expression            : false_type {};
+template<class F, class... BA>
+struct is_bind_expression<__binder<F, BA...> >         : true_type {};
+
+template<class F, class... BoundArgs>
+inline __binder<typename decay<F>::type, typename decay<BoundArgs>::type...>
+bind(F&& f, BoundArgs&&... b) {
+	return __binder<typename decay<F>::type,
+	                typename decay<BoundArgs>::type...>(
+	    static_cast<F&&>(f), static_cast<BoundArgs&&>(b)...);
+}
+
+/* --- bind_front: bound arguments before the call arguments, no
+       placeholder handling ---------------------------------------------- */
+
+template<class F, class... BoundArgs>
+class __binder_front {
+	typedef __btuple<typename decay<BoundArgs>::type...> __btp;
+	typedef typename __mk_idx<sizeof...(BoundArgs)>::type __bidx;
+
+	F m_f;
+	__btp m_a;
+
+	template<class CTup, int... Is, int... Js>
+	static auto __invoke(F& f, __btp& t, CTup& cp, __idx<Is...>, __idx<Js...>)
+	    -> decltype(f(__bt_get<Is, __btp>::get(t)...,
+	                  __bt_get<Js, CTup>::get(cp)...))
+	{
+		return f(__bt_get<Is, __btp>::get(t)...,
+		         __bt_get<Js, CTup>::get(cp)...);
+	}
+
+public:
+	__binder_front(F f, BoundArgs... b)
+	    : m_f(f), m_a(static_cast<BoundArgs&&>(b)...) {}
+
+	template<class... CArgs>
+	auto operator()(CArgs... c)
+	    -> decltype(__invoke(m_f, m_a,
+	            __stl_declval<__btuple<CArgs...>&>(), __bidx(),
+	            typename __mk_idx<__btuple<CArgs...>::__len>::type()))
+	{
+		__btuple<CArgs...> cp(static_cast<CArgs&&>(c)...);
+		return __invoke(m_f, m_a, cp, __bidx(),
+		                typename __mk_idx<__btuple<CArgs...>::__len>::type());
+	}
+};
+
+template<class F, class... BoundArgs>
+inline __binder_front<typename decay<F>::type,
+                      typename decay<BoundArgs>::type...>
+bind_front(F&& f, BoundArgs&&... b) {
+	return __binder_front<typename decay<F>::type,
+	                      typename decay<BoundArgs>::type...>(
+	    static_cast<F&&>(f), static_cast<BoundArgs&&>(b)...);
+}
+
+/* --- not_fn ------------------------------------------------------------ */
+
+template<class F>
+class __not_fn_t {
+	F m_f;
+public:
+	explicit __not_fn_t(F f) : m_f(f) {}
+	template<class... A>
+	auto operator()(A... a) -> decltype(!m_f(static_cast<A&&>(a)...)) {
+		return !m_f(static_cast<A&&>(a)...);
+	}
+};
+
+template<class F>
+inline __not_fn_t<typename decay<F>::type> not_fn(F&& f) {
+	return __not_fn_t<typename decay<F>::type>(static_cast<F&&>(f));
+}
+
+/* --- mem_fn ------------------------------------------------------------ */
+
+template<class C, class R, class... A>
+class __memfn_mf {
+	R (C::*m_p)(A...);
+public:
+	explicit __memfn_mf(R (C::*p)(A...)) : m_p(p) {}
+	R operator()(C& c, A... a) const {
+		return (c.*m_p)(static_cast<A&&>(a)...);
+	}
+	R operator()(C* c, A... a) const {
+		return (c->*m_p)(static_cast<A&&>(a)...);
+	}
+};
+
+template<class C, class R, class... A>
+class __memfn_mfc {
+	R (C::*m_p)(A...) const;
+public:
+	explicit __memfn_mfc(R (C::*p)(A...) const) : m_p(p) {}
+	R operator()(const C& c, A... a) const {
+		return (c.*m_p)(static_cast<A&&>(a)...);
+	}
+	R operator()(const C* c, A... a) const {
+		return (c->*m_p)(static_cast<A&&>(a)...);
+	}
+};
+
+template<class C, class R>
+class __memfn_mo {
+	R C::*m_p;
+public:
+	explicit __memfn_mo(R C::*p) : m_p(p) {}
+	R& operator()(C& c) const { return c.*m_p; }
+	R& operator()(C* c) const { return c->*m_p; }
+};
+
+template<class C, class R, class... A>
+inline __memfn_mf<C, R, A...> mem_fn(R (C::*p)(A...)) {
+	return __memfn_mf<C, R, A...>(p);
+}
+
+template<class C, class R, class... A>
+inline __memfn_mfc<C, R, A...> mem_fn(R (C::*p)(A...) const) {
+	return __memfn_mfc<C, R, A...>(p);
+}
+
+template<class C, class R>
+inline __memfn_mo<C, R> mem_fn(R C::*p) {
+	return __memfn_mo<C, R>(p);
+}
+
 }  /* namespace std */
 
 #endif

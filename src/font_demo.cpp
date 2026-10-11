@@ -2,7 +2,7 @@
    Build it once per combination, the font and the paper are chosen in the
    builder and baked into the .g3a:
 
-       prizm-builder-cli.exe examples\font_demo.cpp --font small --bg black
+       cpprizm.exe examples\font_demo.cpp --font small --bg black
 
    The screen shows the alphabet, the digits and a few lines of ordinary
    output, which is enough to see how much fits and how readable each of the
